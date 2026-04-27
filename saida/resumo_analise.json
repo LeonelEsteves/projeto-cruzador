@@ -1,0 +1,50 @@
+{
+  "arquivos": {
+    "akd": "DADOS-AKD010.xlsx",
+    "ct2": "DADOS-CT2010.xlsx"
+  },
+  "linhas": {
+    "akd": 68046,
+    "ct2": 49413
+  },
+  "sobreposicao_documental": {
+    "akd_xdoc__ct2_xdoc": {
+      "keys_em_comum": 2573,
+      "status": {
+        "forte_grupo": 570,
+        "ambiguo": 1991,
+        "forte_1x1": 12
+      }
+    },
+    "akd_xnumap__ct2_xdocum": {
+      "keys_em_comum": 1671,
+      "status": {
+        "ambiguo": 1503,
+        "forte_grupo": 168
+      }
+    }
+  },
+  "assinatura_residual": {
+    "akd_distinct_month_value": 15545,
+    "ct2_distinct_month_value": 22500,
+    "overlap_month_value": 9265
+  },
+  "reconciliacao_linha_a_linha": {
+    "candidatos_gerados": 206856,
+    "matches_selecionados": 17789,
+    "por_confianca": {
+      "muito_forte": 5565,
+      "forte": 9218,
+      "provavel": 3006
+    },
+    "arquivo_comparativo": "saida/comparativo_conciliacao.csv",
+    "arquivo_html": "saida/relatorio_conciliacao.html"
+  },
+  "recomendacao": [
+    "Priorizar match por AKD_XDOC = CT2_XDOC.",
+    "Usar AKD_XNUMAP = CT2_XDOCUM como segunda camada.",
+    "Usar competencia + valor como bloco residual para limitar candidatos.",
+    "Reforcar score com similaridade de texto e com coincidencia de conta em AKD_ENT05.",
+    "Selecionar apenas um melhor candidato por linha com score auditavel."
+  ]
+}
