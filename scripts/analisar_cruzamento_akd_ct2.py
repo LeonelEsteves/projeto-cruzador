@@ -563,6 +563,22 @@ def derived_ct2_date(row: dict[str, str]) -> str:
     return clean(row.get("CT2_DATA", ""))
 
 
+def year_from_ct2_row(row: dict[str, str]) -> str:
+    return year_from_date(row.get("CT2_DATA", ""))
+
+
+def quarter_from_ct2_row(row: dict[str, str]) -> str:
+    return quarter_from_date(row.get("CT2_DATA", ""))
+
+
+def text_richness(row: dict[str, str]) -> int:
+    return len(text_tokens(row_text_ct2(row)))
+
+
+def has_reason_prefix(reasons: list[str], prefix: str) -> bool:
+    return any(reason == prefix or reason.startswith(f"{prefix}:") for reason in reasons)
+
+
 def load_dictionary_definitions() -> dict[str, list[dict[str, object]]]:
     rows = read_rows(resolve_source_path(REFERENCE_DIR, "DICIONARIO"))
     grouped: dict[str, list[dict[str, object]]] = defaultdict(list)
@@ -678,6 +694,20 @@ class CandidateMatch:
     token_overlap: int
 
 
+@dataclass
+class GroupSuggestion:
+    group_type: str
+    anchor_recno: str
+    side_size: int
+    selected_pairs: int
+    blocked_pairs: int
+    max_score: int
+    signature: str
+    evidence: str
+    akd_recnos: str
+    ct2_recnos: str
+
+
 def rows_by_key(rows: Iterable[dict[str, str]], column: str) -> dict[str, list[dict[str, str]]]:
     groups: dict[str, list[dict[str, str]]] = defaultdict(list)
     for row in rows:
@@ -685,6 +715,111 @@ def rows_by_key(rows: Iterable[dict[str, str]], column: str) -> dict[str, list[d
         if key:
             groups[key].append(row)
     return groups
+
+
+def normalized_reason_set(reasons: str) -> set[str]:
+    normalized: set[str] = set()
+    for item in reasons.split("|"):
+        base = item.split(":", 1)[0]
+        if not base:
+            continue
+        if base.startswith("chave_estruturada_"):
+            normalized.add("chave_estruturada")
+        elif base.startswith("doc_extra_"):
+            normalized.add("doc_extra")
+        elif base.startswith("tokens_"):
+            normalized.add("tokens")
+        elif base.startswith("texto_"):
+            normalized.add("texto")
+        else:
+            normalized.add(base)
+    return normalized
+
+
+def build_group_signature(candidate: CandidateMatch) -> str:
+    reasons = normalized_reason_set(candidate.reasons)
+    ordered = [
+        "xdoc",
+        "xnumap_xdocum",
+        "xnumap_at04db",
+        "akd_xdoc_ct2_recno",
+        "doc_extra",
+        "chave_estruturada",
+        "competencia",
+        "ent05_conta",
+        "cc",
+        "classe_valor",
+        "tokens",
+        "texto",
+    ]
+    return "|".join(label for label in ordered if label in reasons)
+
+
+def candidate_supports_group(candidate: CandidateMatch) -> bool:
+    reasons = normalized_reason_set(candidate.reasons)
+    has_anchor = bool(
+        reasons
+        & {"xdoc", "xnumap_xdocum", "xnumap_at04db", "akd_xdoc_ct2_recno", "doc_extra", "chave_estruturada"}
+    )
+    has_context = bool(reasons & {"competencia", "ent05_conta", "cc", "classe_valor"})
+    return candidate.confidence == "muito_forte" and candidate.score >= 120 and has_anchor and has_context
+
+
+def build_group_match_suggestions(
+    candidates: list[CandidateMatch],
+    selected: list[CandidateMatch],
+) -> list[GroupSuggestion]:
+    selected_pairs = {(item.akd_recno, item.ct2_recno) for item in selected}
+    by_akd: dict[str, list[CandidateMatch]] = defaultdict(list)
+    by_ct2: dict[str, list[CandidateMatch]] = defaultdict(list)
+
+    for candidate in candidates:
+        if not candidate_supports_group(candidate):
+            continue
+        by_akd[candidate.akd_recno].append(candidate)
+        by_ct2[candidate.ct2_recno].append(candidate)
+
+    suggestions: list[GroupSuggestion] = []
+    seen_keys: set[tuple[str, str, str]] = set()
+
+    def append_group(group_type: str, anchor_recno: str, items: list[CandidateMatch]) -> None:
+        if len(items) < 2:
+            return
+        blocked = [item for item in items if (item.akd_recno, item.ct2_recno) not in selected_pairs]
+        if not blocked:
+            return
+        signature_counter = Counter(build_group_signature(item) for item in items)
+        signature, _ = signature_counter.most_common(1)[0]
+        key = (group_type, anchor_recno, signature)
+        if key in seen_keys:
+            return
+        seen_keys.add(key)
+        evidence = "ancora_documental_ou_estruturada + contexto_contabil"
+        suggestions.append(
+            GroupSuggestion(
+                group_type=group_type,
+                anchor_recno=anchor_recno,
+                side_size=len(items),
+                selected_pairs=len(items) - len(blocked),
+                blocked_pairs=len(blocked),
+                max_score=max(item.score for item in items),
+                signature=signature,
+                evidence=evidence,
+                akd_recnos="|".join(sorted({item.akd_recno for item in items}, key=int)),
+                ct2_recnos="|".join(sorted({item.ct2_recno for item in items}, key=int)),
+            )
+        )
+
+    for akd_recno, items in by_akd.items():
+        append_group("akd_1xN", akd_recno, sorted(items, key=lambda item: item.score, reverse=True)[:5])
+    for ct2_recno, items in by_ct2.items():
+        append_group("ct2_Nx1", ct2_recno, sorted(items, key=lambda item: item.score, reverse=True)[:5])
+
+    return sorted(
+        suggestions,
+        key=lambda item: (item.max_score, item.blocked_pairs, item.side_size),
+        reverse=True,
+    )
 
 
 def summarize_overlap(
@@ -791,12 +926,12 @@ def score_candidate(akd_row: dict[str, str], ct2_row: dict[str, str]) -> Candida
     akd_xnumap = clean(akd_row.get("AKD_XNUMAP", ""))
     ct2_xdocum = clean(ct2_row.get("CT2_XDOCUM", ""))
     if akd_xnumap and ct2_xdocum and akd_xnumap == ct2_xdocum:
-        score += 60
+        score += 72
         reasons.append("xnumap_xdocum")
 
     ct2_at04db = clean(ct2_row.get("CT2_AT04DB", ""))
     if akd_xnumap and ct2_at04db and akd_xnumap == ct2_at04db:
-        score += 55
+        score += 70
         reasons.append("xnumap_at04db")
 
     linked_ct2_recno = ct2_recno_from_akd_xdoc(akd_row.get("AKD_XDOC", ""))
@@ -833,25 +968,88 @@ def score_candidate(akd_row: dict[str, str], ct2_row: dict[str, str]) -> Candida
     akd_ent05 = clean(akd_row.get("AKD_ENT05", ""))
     ct2_account = row_account_ct2(ct2_row)
     if akd_ent05 and ct2_account and akd_ent05 == ct2_account:
-        score += 18
+        score += 22
         reasons.append("ent05_conta")
 
     akd_cc = clean(akd_row.get("AKD_CC", ""))
     ct2_ccd = clean(ct2_row.get("CT2_CCD", ""))
     ct2_ccc = clean(ct2_row.get("CT2_CCC", ""))
     if akd_cc and (akd_cc == ct2_ccd or akd_cc == ct2_ccc):
-        score += 10
+        score += 14
         reasons.append("cc")
 
     akd_clvlr = clean(akd_row.get("AKD_CLVLR", ""))
     if akd_clvlr and (akd_clvlr == clean(ct2_row.get("CT2_CLVLDB", "")) or akd_clvlr == clean(ct2_row.get("CT2_CLVLCR", ""))):
-        score += 10
+        score += 16
         reasons.append("classe_valor")
 
     akd_item = clean(akd_row.get("AKD_ITCTB", ""))
     if akd_item and (akd_item == clean(ct2_row.get("CT2_ITEMD", "")) or akd_item == clean(ct2_row.get("CT2_ITEMC", ""))):
         score += 8
         reasons.append("item_contabil")
+
+    if {"competencia", "ent05_conta", "cc"} <= set(reasons):
+        score += 18
+        reasons.append("competencia_conta_cc")
+
+    if {"competencia", "classe_valor"} <= set(reasons):
+        score += 12
+        reasons.append("competencia_classe")
+
+    if {"competencia", "ent05_conta", "classe_valor"} <= set(reasons):
+        score += 18
+        reasons.append("competencia_conta_classe")
+
+    if {"competencia", "cc", "classe_valor"} <= set(reasons):
+        score += 14
+        reasons.append("competencia_cc_classe")
+
+    if {"ent05_conta", "cc", "classe_valor"} <= set(reasons):
+        score += 12
+        reasons.append("conta_cc_classe")
+
+    has_direct_doc_anchor = any(
+        reason in reasons
+        for reason in {"xdoc", "xnumap_xdocum", "xnumap_at04db", "akd_xdoc_ct2_recno"}
+    )
+    has_doc_extra = has_reason_prefix(reasons, "doc_extra_")
+    has_structured_key = has_reason_prefix(reasons, "chave_estruturada_")
+
+    if has_doc_extra and not has_direct_doc_anchor:
+        score += 10
+        reasons.append("doc_extra_sem_ancora")
+
+    if has_doc_extra and "competencia" in reasons:
+        score += 14
+        reasons.append("doc_extra_competencia")
+
+    if has_doc_extra and "ent05_conta" in reasons:
+        score += 10
+        reasons.append("doc_extra_conta")
+
+    if has_doc_extra and "cc" in reasons:
+        score += 8
+        reasons.append("doc_extra_cc")
+
+    if has_doc_extra and "classe_valor" in reasons:
+        score += 12
+        reasons.append("doc_extra_classe")
+
+    if has_structured_key and not has_direct_doc_anchor:
+        score += 8
+        reasons.append("chave_sem_ancora")
+
+    if has_structured_key and "competencia" in reasons:
+        score += 10
+        reasons.append("chave_competencia")
+
+    if has_structured_key and "classe_valor" in reasons:
+        score += 10
+        reasons.append("chave_classe")
+
+    if has_structured_key and "ent05_conta" in reasons:
+        score += 8
+        reasons.append("chave_conta")
 
     text_akd = row_text_akd(akd_row)
     text_ct2 = row_text_ct2(ct2_row)
@@ -877,6 +1075,35 @@ def score_candidate(akd_row: dict[str, str], ct2_row: dict[str, str]) -> Candida
     elif text_similarity >= 0.55:
         score += 6
         reasons.append("texto_055")
+
+    if (
+        token_overlap >= 4
+        and text_similarity >= 0.55
+        and "competencia" in reasons
+        and "ent05_conta" in reasons
+        and not has_direct_doc_anchor
+    ):
+        score += 12
+        reasons.append("texto_conta_competencia")
+
+    if (
+        token_overlap >= 4
+        and text_similarity >= 0.55
+        and "competencia" in reasons
+        and "classe_valor" in reasons
+        and not has_direct_doc_anchor
+    ):
+        score += 12
+        reasons.append("texto_classe_competencia")
+
+    if (
+        token_overlap >= 6
+        and text_similarity >= 0.70
+        and text_richness(ct2_row) >= 4
+        and not has_direct_doc_anchor
+    ):
+        score += 10
+        reasons.append("texto_profundo_sem_ancora")
 
     if score >= 125:
         confidence = "muito_forte"
@@ -907,6 +1134,11 @@ def build_candidate_pairs(
     ct2_by_xdocum = rows_by_key(ct2_rows, "CT2_XDOCUM")
     ct2_by_at04db = rows_by_key(ct2_rows, "CT2_AT04DB")
     ct2_by_month_value: dict[tuple[str, Decimal], list[dict[str, str]]] = defaultdict(list)
+    ct2_by_year_value: dict[tuple[str, Decimal], list[dict[str, str]]] = defaultdict(list)
+    ct2_by_quarter_value: dict[tuple[str, Decimal], list[dict[str, str]]] = defaultdict(list)
+    ct2_by_account_value: dict[tuple[str, Decimal], list[dict[str, str]]] = defaultdict(list)
+    ct2_by_cc_value: dict[tuple[str, Decimal], list[dict[str, str]]] = defaultdict(list)
+    ct2_by_class_value: dict[tuple[str, Decimal], list[dict[str, str]]] = defaultdict(list)
     ct2_by_doc_key: dict[str, list[dict[str, str]]] = defaultdict(list)
     ct2_by_key_token: dict[str, list[dict[str, str]]] = defaultdict(list)
     akd_key_token_freq: Counter[str] = Counter()
@@ -916,6 +1148,22 @@ def build_candidate_pairs(
         value = normalize_decimal(row.get("CT2_VALOR", ""))
         if month and value is not None:
             ct2_by_month_value[(month, value)].append(row)
+        if value is not None:
+            year = year_from_ct2_row(row)
+            quarter = quarter_from_ct2_row(row)
+            if year:
+                ct2_by_year_value[(year, value)].append(row)
+            if quarter:
+                ct2_by_quarter_value[(quarter, value)].append(row)
+            for account in [clean(row.get("CT2_DEBITO", "")), clean(row.get("CT2_CREDIT", ""))]:
+                if account:
+                    ct2_by_account_value[(account, value)].append(row)
+            for cc in [clean(row.get("CT2_CCD", "")), clean(row.get("CT2_CCC", ""))]:
+                if cc:
+                    ct2_by_cc_value[(cc, value)].append(row)
+            for class_value in [clean(row.get("CT2_CLVLDB", "")), clean(row.get("CT2_CLVLCR", ""))]:
+                if class_value:
+                    ct2_by_class_value[(class_value, value)].append(row)
         for doc_key in row_doc_keys_ct2(row):
             ct2_by_doc_key[doc_key].append(row)
         for key_token in extract_structured_key_tokens(row.get("CT2_KEY", "")):
@@ -970,6 +1218,26 @@ def build_candidate_pairs(
         if akd_month and akd_value is not None:
             for row in ct2_by_month_value.get((akd_month, akd_value), []):
                 candidate_rows[clean(row["R_E_C_N_O_"])] = row
+            akd_year = year_from_akd_date(akd_row.get("AKD_DATA", ""))
+            akd_quarter = quarter_from_akd_date(akd_row.get("AKD_DATA", ""))
+            akd_ent05 = clean(akd_row.get("AKD_ENT05", ""))
+            akd_cc = clean(akd_row.get("AKD_CC", ""))
+            akd_clvlr = clean(akd_row.get("AKD_CLVLR", ""))
+            if akd_year:
+                for row in ct2_by_year_value.get((akd_year, akd_value), []):
+                    candidate_rows[clean(row["R_E_C_N_O_"])] = row
+            if akd_quarter:
+                for row in ct2_by_quarter_value.get((akd_quarter, akd_value), []):
+                    candidate_rows[clean(row["R_E_C_N_O_"])] = row
+            if akd_ent05:
+                for row in ct2_by_account_value.get((akd_ent05, akd_value), []):
+                    candidate_rows[clean(row["R_E_C_N_O_"])] = row
+            if akd_cc:
+                for row in ct2_by_cc_value.get((akd_cc, akd_value), []):
+                    candidate_rows[clean(row["R_E_C_N_O_"])] = row
+            if akd_clvlr:
+                for row in ct2_by_class_value.get((akd_clvlr, akd_value), []):
+                    candidate_rows[clean(row["R_E_C_N_O_"])] = row
 
         for ct2_row in candidate_rows.values():
             pair = (clean(akd_row["R_E_C_N_O_"]), clean(ct2_row["R_E_C_N_O_"]))
@@ -989,7 +1257,19 @@ def select_best_matches(candidates: list[CandidateMatch]) -> list[CandidateMatch
     log_step("Selecionando melhor candidato por linha")
     ordered = sorted(
         candidates,
-        key=lambda item: (item.score, item.token_overlap, item.text_similarity),
+        key=lambda item: (
+            item.score,
+            "xnumap_xdocum" in item.reasons,
+            "xnumap_at04db" in item.reasons,
+            "doc_extra_competencia" in item.reasons,
+            "doc_extra_classe" in item.reasons,
+            "chave_competencia" in item.reasons,
+            "competencia_conta_cc" in item.reasons,
+            "competencia_conta_classe" in item.reasons,
+            "classe_valor" in item.reasons,
+            item.token_overlap,
+            item.text_similarity,
+        ),
         reverse=True,
     )
 
@@ -1018,6 +1298,7 @@ def export_row_matches(
     selected = select_best_matches(candidates)
     selected_akd = {item.akd_recno for item in selected}
     selected_ct2 = {item.ct2_recno for item in selected}
+    grouped_suggestions = build_group_match_suggestions(candidates, selected)
 
     OUTPUT_DIR.mkdir(exist_ok=True)
     match_path = OUTPUT_DIR / "matches_linha_a_linha.csv"
@@ -1221,6 +1502,40 @@ def export_row_matches(
                     clean(row.get("AKD_XNUMAP", "")),
                     clean(row.get("AKD_ENT05", "")),
                     row_text_akd(row),
+                ]
+            )
+
+    grouped_path = OUTPUT_DIR / "grupos_match_potenciais.csv"
+    log_step(f"Exportando {grouped_path.name}")
+    with grouped_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle, delimiter=";")
+        writer.writerow(
+            [
+                "tipo_grupo",
+                "recno_ancora",
+                "pares_no_grupo",
+                "pares_selecionados",
+                "pares_bloqueados",
+                "score_maximo",
+                "assinatura",
+                "evidencia",
+                "akd_recnos",
+                "ct2_recnos",
+            ]
+        )
+        for item in grouped_suggestions:
+            writer.writerow(
+                [
+                    item.group_type,
+                    item.anchor_recno,
+                    item.side_size,
+                    item.selected_pairs,
+                    item.blocked_pairs,
+                    item.max_score,
+                    item.signature,
+                    item.evidence,
+                    item.akd_recnos,
+                    item.ct2_recnos,
                 ]
             )
 
@@ -3388,6 +3703,8 @@ def export_row_matches(
         "candidatos_gerados": len(candidates),
         "matches_selecionados": len(selected),
         "por_confianca": dict(Counter(item.confidence for item in selected)),
+        "grupos_match_potenciais": len(grouped_suggestions),
+        "arquivo_grupos_potenciais": "saida/grupos_match_potenciais.csv",
         "arquivo_comparativo": "saida/comparativo_conciliacao.csv",
         "arquivo_html": "saida/relatorio_conciliacao.html",
     }

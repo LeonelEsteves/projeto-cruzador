@@ -24,6 +24,7 @@ O reconciliador trabalha com:
 
 Arquivos principais:
 - `scripts/analisar_cruzamento_akd_ct2.py`
+- `scripts/analisar_match_profundo_akd_ct2.py`
 - `docs/MEMORIA_CRUZADOR_AKDXCT2.md`
 - `docs/estrategia_cruzamento.md`
 - `saida/relatorio_conciliacao.html`
@@ -105,8 +106,15 @@ O score do match pode ser reforcado por:
 - mesmo centro de custo
 - mesma classe de valor
 - mesmo item contabil
+- combinacao `competencia + conta + CC`
+- combinacao `competencia + classe de valor`
+- combinacao `competencia + conta + classe de valor`
+- combinacao `competencia + CC + classe de valor`
+- evidencias documentais extraidas do historico combinadas com `competencia`, `conta`, `CC` e `classe`
+- evidencias por chave estruturada combinadas com `competencia`, `conta` e `classe`
 - tokens em comum no historico
 - similaridade textual do historico
+- reforco textual para casos sem ancora documental explicita, quando `texto`, `competencia`, `conta` ou `classe` convergem
 
 ## Saidas
 
@@ -118,7 +126,21 @@ Arquivos gerados em `saida/`:
 - `overlap_xnumap.csv`
 - `akd_sem_match.csv`
 - `ct2_sem_match.csv`
+- `grupos_match_potenciais.csv`
 - `relatorio_conciliacao.html`
+
+Arquivos gerados pela analise profunda de match em `saida/analise_match_profunda/`:
+- `candidatos_match_detalhados.csv`
+- `assinaturas_evidencia.csv`
+- `top_candidatos_akd_sem_match.csv`
+- `top_candidatos_ct2_sem_match.csv`
+- `hipoteses_novas_regras.csv`
+- `campos_prioritarios_akd.csv`
+- `campos_prioritarios_ct2.csv`
+- `sobreposicao_campos_cruzados.csv`
+- `correlacao_campos_match.csv`
+- `origens_candidatos.csv`
+- `resumo_match_profundo.json`
 
 ## Relatorio HTML
 
@@ -143,6 +165,30 @@ No PowerShell, a partir da raiz do projeto:
 python scripts/analisar_cruzamento_akd_ct2.py
 ```
 
+Para rodar a analise profunda segregada, focada em descobrir novos matches:
+
+```powershell
+python scripts/analisar_match_profundo_akd_ct2.py
+```
+
+Para limitar a trilha de investigacao aos `N` melhores candidatos por registro sem match:
+
+```powershell
+python scripts/analisar_match_profundo_akd_ct2.py --top 10
+```
+
+Para ampliar a profundidade da busca usando mais colunas e mais blocos de candidatos:
+
+```powershell
+python scripts/analisar_match_profundo_akd_ct2.py --modo amplo
+```
+
+Para varrer de forma ainda mais pesada, incluindo grupos por valor puro:
+
+```powershell
+python scripts/analisar_match_profundo_akd_ct2.py --modo exaustivo --limite-grupo-valor 0 --top 20
+```
+
 Para abrir o relatorio:
 
 ```powershell
@@ -153,12 +199,12 @@ start .\saida\relatorio_conciliacao.html
 
 Totais da rodada atual, conforme `saida/resumo_analise.json`:
 - `AKD`: `20.346`
-- `CT2`: `27.900`
-- `candidatos_gerados`: `234.874`
-- `matches_selecionados`: `9.889`
-- `muito_forte`: `9.332`
-- `forte`: `84`
-- `provavel`: `473`
+- `CT2`: `27.966`
+- `candidatos_gerados`: `264.308`
+- `matches_selecionados`: `9.874`
+- `muito_forte`: `9.392`
+- `forte`: `462`
+- `provavel`: `20`
 
 Na versao atual, o projeto ja contempla:
 - cruzamento documental
@@ -166,8 +212,15 @@ Na versao atual, o projeto ja contempla:
 - extracao avancada de documentos
 - ligacao entre `AKD_XDOC` e `RECNO` da `CT2`
 - cruzamento por tokens estruturados entre `AKD_CHAVE` e `CT2_KEY`
+- reforco de score para `AKD_XNUMAP -> CT2_XDOCUM` e `AKD_XNUMAP -> CT2_AT04DB`
+- blocos residuais mais amplos por `ano + valor`, `trimestre + valor`, `conta + valor`, `CC + valor` e `classe + valor`
+- reforcos compostos por `documento extra + competencia/conta/CC/classe`
+- reforcos compostos por `chave estruturada + competencia/conta/classe`
+- reforco textual para matches sem ancora direta, quando o contexto operacional converge
+- trilha segregada para grupos potenciais `1xN` e `Nx1` quando o `1x1` bloqueia candidatos muito fortes
 - painel visual com dashboard e trilhas de pendencia
 - identificacao visual da versao do cruzador no HTML
+- analise profunda segregada para investigar candidatos e desenhar novas regras de match
 
 ## Observacoes Importantes
 
@@ -182,3 +235,41 @@ Na versao atual, o projeto ja contempla:
 - mostrar no HTML quais evidencias sustentaram cada match
 - criar trilha especifica para conflitos `Nx1`
 - evoluir reconciliacao por grupo `1xN` e `NxN`
+
+## Analise Profunda De Match
+
+O script `scripts/analisar_match_profundo_akd_ct2.py` serve para investigar candidatos de cruzamento sem alterar a logica principal do reconciliador.
+
+Ele foi pensado para apoiar a descoberta de novas regras, mostrando:
+- todos os candidatos de match gerados pelo motor atual, com score, evidencias e status de selecao
+- candidatos adicionais descobertos por blocos mais amplos como `ano + valor`, `trimestre + valor`, `conta + valor`, `CC + valor`, `classe + valor`, `item + valor`, `filial + valor` e, no modo exaustivo, `valor puro`
+- assinaturas recorrentes de evidencia para entender o que mais gera match e o que mais fica bloqueado
+- correlacao entre outras colunas relevantes das duas bases para apoiar novas hipoteses de regra
+- perfil automatico das colunas mais preenchidas e mais discriminantes de cada base
+- sobreposicao entre campos cruzaveis normalizados, incluindo documento, token estruturado, conta, centro de custo, classe, item, mes, ano e trimestre
+- os melhores candidatos para cada `AKD` e `CT2` que ficaram sem match final
+- hipoteses de novas regras com base em combinacoes recorrentes de sinais como `AT04DB`, `competencia`, `conta`, `CC`, `texto`, `tokens`, `chave estruturada` e `documento extra`
+
+## Grupos Potenciais 1xN E Nx1
+
+O reconciliador principal continua fechando a conciliacao oficial em `1x1`, mas agora tambem exporta a trilha `saida/grupos_match_potenciais.csv`.
+
+Essa trilha destaca casos em que:
+- existe evidencia muito forte de match
+- ha ancora documental ou estrutural
+- o contexto contabil tambem converge
+- mas o pareamento final bloqueia o caso por disputa entre dois ou mais registros
+
+Os tipos atuais sao:
+- `akd_1xN`: um registro AKD com multiplos CT2 muito fortes
+- `ct2_Nx1`: um registro CT2 com multiplos AKD muito fortes
+
+Essa saida foi criada para apoiar a futura implementacao de reconciliacao por grupo sem perder a seguranca do fluxo `1x1`.
+
+Leitura sugerida dos resultados:
+- comece por `resumo_match_profundo.json`
+- depois revise `hipoteses_novas_regras.csv`
+- em seguida leia `correlacao_campos_match.csv` e `origens_candidatos.csv`
+- depois use `campos_prioritarios_akd.csv`, `campos_prioritarios_ct2.csv` e `sobreposicao_campos_cruzados.csv` para localizar novas colunas promissoras
+- em seguida priorize `top_candidatos_akd_sem_match.csv` e `top_candidatos_ct2_sem_match.csv`
+- use `assinaturas_evidencia.csv` para decidir quais combinacoes merecem virar regra nova no cruzador principal
