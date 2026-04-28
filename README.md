@@ -10,7 +10,7 @@ O reconciliador trabalha com:
 - regras documentais
 - comparacao por valor e competencia
 - similaridade de historico
-- contas e centro de custo
+- contas, centro de custo, classe de valor e item contabil
 - documentos extraidos do historico
 - regras especificas de ligacao entre campos tecnicos das bases
 
@@ -27,6 +27,7 @@ Arquivos principais:
 - `docs/MEMORIA_CRUZADOR_AKDXCT2.md`
 - `docs/estrategia_cruzamento.md`
 - `saida/relatorio_conciliacao.html`
+- `saida/resumo_analise.json`
 
 ## Entradas
 
@@ -126,11 +127,11 @@ O arquivo `saida/relatorio_conciliacao.html` possui:
 - aba `Matches`
 - aba `AKD sem match`
 - aba `CT2 sem match`
-- filtros
-- busca livre
-- ordenacao
+- filtros, busca livre e ordenacao
 - redimensionamento de colunas
-- expansao de colunas de historico
+- expansao das colunas de historico
+- indicadores de divergencia de data, valor e conta
+- identificacao de versao no topo com data de atualizacao e link para o commit do Git
 
 ## Como Executar
 
@@ -148,22 +149,30 @@ start .\saida\relatorio_conciliacao.html
 
 ## Estado Atual
 
-Os totais atuais devem ser conferidos em:
-- `saida/resumo_analise.json`
+Totais da rodada atual, conforme `saida/resumo_analise.json`:
+- `AKD`: `20.346`
+- `CT2`: `27.900`
+- `candidatos_gerados`: `234.874`
+- `matches_selecionados`: `9.889`
+- `muito_forte`: `9.332`
+- `forte`: `84`
+- `provavel`: `473`
 
-Na rodada atual, o projeto ja contempla:
+Na versao atual, o projeto ja contempla:
 - cruzamento documental
 - cruzamento por valor e competencia
 - extracao avancada de documentos
 - ligacao entre `AKD_XDOC` e `RECNO` da `CT2`
 - cruzamento por tokens de `9` digitos entre `AKD_CHAVE` e `CT2_KEY`
 - painel visual com dashboard e trilhas de pendencia
+- identificacao visual da versao do cruzador no HTML
 
 ## Observacoes Importantes
 
 - `RECNO` e `LOTE` nao sao usados como chave direta de conciliacao entre `AKD` e `CT2`
 - o `RECNO` da `CT2` pode ser usado como evidencia indireta quando codificado em `AKD_XDOC`
 - um registro aparecer em trilha de `sem match` nao significa necessariamente ausencia total de indicio, e sim que ele nao foi escolhido no pareamento final `1x1`
+- a base atual esta sendo trabalhada com recorte filtrado, entao os totais nao devem ser comparados com rodadas antigas sem considerar os filtros de origem
 
 ## Proximos Passos Sugeridos
 
