@@ -28,7 +28,7 @@ Construir e evoluir uma rotina em Python para analisar e reconciliar movimentos 
   - `AKD_XDOC` <-> `CT2_XDOC`
   - `AKD_XNUMAP` <-> `CT2_XDOCUM`
   - `AKD_XDOC` no formato `CT2<recno>` <-> `CT2.R_E_C_N_O_`
-  - documentos de `9` digitos em `AKD_CHAVE` <-> `CT2_KEY`
+  - tokens estruturados e alfanumericos em `AKD_CHAVE` <-> `CT2_KEY`
   - documentos embutidos nos historicos e campos auxiliares
 
 ## Filtros de origem atualmente ativos
@@ -57,7 +57,7 @@ Usar estrategia em camadas:
   - `AKD_XDOC` x `CT2_XDOC`
   - `AKD_XNUMAP` x `CT2_XDOCUM`
   - `AKD_XDOC -> RECNO CT2` quando o valor vem no formato `CT2<numero>`
-  - `AKD_CHAVE` x `CT2_KEY` por tokens de `9` digitos
+  - `AKD_CHAVE` x `CT2_KEY` por tokens estruturados das chaves compostas
   - `competencia + valor`
   - documentos encontrados em historicos e campos auxiliares
 - O score atual combina sinais como:

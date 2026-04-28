@@ -20,10 +20,11 @@ NS = {"main": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_DIR = ROOT / "saida"
 RAW_DIR = ROOT / "dados" / "brutos"
+REFERENCE_DIR = ROOT / "dados" / "referencia"
 CT2_ALLOWED_MOEDLC = {"01"}
 CT2_ALLOWED_DC = {"1", "2"}
 AKD_ALLOWED_TPSALD = {"LQ", "PG", "AR", "RB"}
-DOC9_MAX_FREQ_PER_SIDE = 25
+KEY_TOKEN_MAX_FREQ_PER_SIDE = 40
 
 
 class ProgressBar:
@@ -166,6 +167,59 @@ def read_excel_rows(path: Path) -> list[dict[str, str]]:
     return normalized_rows
 
 
+def read_csv_rows(path: Path) -> list[dict[str, str]]:
+    log_step(f"Lendo arquivo {path.name}")
+    encodings = ("utf-8-sig", "utf-8", "cp1252", "latin-1")
+    last_error: UnicodeDecodeError | None = None
+    for encoding in encodings:
+        try:
+            with path.open("r", newline="", encoding=encoding) as handle:
+                sample = handle.read(8192)
+                handle.seek(0)
+                try:
+                    dialect = csv.Sniffer().sniff(sample, delimiters=",;|\t")
+                except csv.Error:
+                    dialect = csv.excel
+                reader = csv.DictReader(handle, dialect=dialect)
+                if reader.fieldnames is None:
+                    return []
+                return [
+                    {clean(key): clean(value) for key, value in row.items() if key is not None}
+                    for row in reader
+                ]
+        except UnicodeDecodeError as exc:
+            last_error = exc
+            continue
+    if last_error is not None:
+        raise last_error
+    return []
+
+
+def read_rows(path: Path) -> list[dict[str, str]]:
+    suffix = path.suffix.lower()
+    if suffix == ".csv":
+        return read_csv_rows(path)
+    if suffix == ".xlsx":
+        return read_excel_rows(path)
+    raise ValueError(f"Formato de arquivo nao suportado: {path.name}")
+
+
+def resolve_source_path(directory: Path, stem: str) -> Path:
+    candidates = [
+        directory / f"{stem}.csv",
+        directory / f"{stem}.xlsx",
+        directory / f"{stem}-OLD.csv",
+        directory / f"{stem}-OLD.xlsx",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    raise FileNotFoundError(
+        f"Nenhum arquivo encontrado para {stem} em {directory}. "
+        f"Opcoes verificadas: {', '.join(item.name for item in candidates)}"
+    )
+
+
 def clean(value: object) -> str:
     return str(value).strip()
 
@@ -235,24 +289,47 @@ def expand_doc_variants(token: str) -> set[str]:
     return variants
 
 
-def extract_9digit_doc_keys(value: object) -> set[str]:
-    text = clean(value)
+def extract_structured_key_tokens(value: object) -> set[str]:
+    text = normalize_text(value)
     if not text:
         return set()
 
-    keys: set[str] = set()
-    for token in re.findall(r"\d{9}", text):
-        if token == "000000000":
-            continue
-        if token.startswith(("2024", "2025", "2026", "2027")):
-            continue
-        if token in {"011001000", "101001000", "000010101"}:
-            continue
-        keys.add(token)
-        stripped = token.lstrip("0")
-        if stripped and len(stripped) >= 5:
-            keys.add(stripped)
-    return keys
+    tokens: set[str] = set()
+
+    def accept(raw: str) -> None:
+        normalized = normalize_comp_code(raw)
+        if len(normalized) < 5:
+            return
+        if normalized.isdigit():
+            if normalized.startswith(("2024", "2025", "2026", "2027")):
+                return
+            if normalized in {"011001", "011001000", "101001000", "000010101"}:
+                return
+            tokens.update(expand_doc_variants(normalized))
+            return
+
+        letters = sum(ch.isalpha() for ch in normalized)
+        digits = sum(ch.isdigit() for ch in normalized)
+        if letters < 2 or digits < 2:
+            return
+        tokens.update(expand_doc_variants(normalized))
+
+    for chunk in re.findall(r"[A-Z0-9./_-]{5,}", text):
+        accept(chunk)
+        for match in re.findall(r"[A-Z]{2,}[A-Z0-9]{3,}", chunk):
+            accept(match)
+        for match in re.findall(r"\d{3,}[A-Z]{2,}[A-Z0-9]{2,}", chunk):
+            accept(match)
+        for match in re.findall(r"\d{5,}", chunk):
+            accept(match)
+
+    for match in re.findall(
+        r"(?:SE|SF|AK|AP|RFB|TRF|FOL|INV|DARF|DOC|NF|NFS|NFE)[A-Z0-9]{3,}",
+        text,
+    ):
+        accept(match)
+
+    return tokens
 
 
 def normalize_decimal(value: object) -> Decimal | None:
@@ -450,7 +527,7 @@ def row_doc_keys_akd(row: dict[str, str]) -> set[str]:
     keys: set[str] = set()
     for field in fields:
         keys.update(extract_doc_keys(field))
-    keys.update(extract_9digit_doc_keys(row.get("AKD_CHAVE", "")))
+    keys.update(extract_structured_key_tokens(row.get("AKD_CHAVE", "")))
     return keys
 
 
@@ -460,12 +537,13 @@ def row_doc_keys_ct2(row: dict[str, str]) -> set[str]:
         row.get("CT2_XDOCUM", ""),
         row.get("CT2_XNUMCT", ""),
         row.get("CT2_DOC", ""),
+        row.get("CT2_KEY", ""),
         row.get("CT2_HIST", ""),
     ]
     keys: set[str] = set()
     for field in fields:
         keys.update(extract_doc_keys(field))
-    keys.update(extract_9digit_doc_keys(row.get("CT2_KEY", "")))
+    keys.update(extract_structured_key_tokens(row.get("CT2_KEY", "")))
     return keys
 
 
@@ -483,6 +561,100 @@ def row_account_ct2(row: dict[str, str]) -> str:
 
 def derived_ct2_date(row: dict[str, str]) -> str:
     return clean(row.get("CT2_DATA", ""))
+
+
+def load_dictionary_definitions() -> dict[str, list[dict[str, object]]]:
+    rows = read_rows(resolve_source_path(REFERENCE_DIR, "DICIONARIO"))
+    grouped: dict[str, list[dict[str, object]]] = defaultdict(list)
+    for row in rows:
+        table = clean(row.get("X3_ARQUIVO", "")).upper()
+        field = clean(row.get("X3_CAMPO", ""))
+        if not table or not field:
+            continue
+        order_text = clean(row.get("X3_ORDEM", ""))
+        order = int(order_text) if order_text.isdigit() else 9999
+        title = clean(row.get("X3_TITULO", "")) or field
+        grouped[table].append(
+            {
+                "field": field,
+                "title": title,
+                "order": order,
+            }
+        )
+
+    for table in grouped:
+        grouped[table].sort(key=lambda item: (int(item["order"]), str(item["field"])))
+    return grouped
+
+
+def is_history_field(field: str) -> bool:
+    normalized = clean(field).upper()
+    return "HIST" in normalized
+
+
+def build_pure_tab_rows(
+    rows: list[dict[str, str]],
+    dictionary_defs: list[dict[str, object]],
+) -> tuple[list[dict[str, str]], list[dict[str, object]]]:
+    source_fields = list(rows[0].keys()) if rows else []
+    source_field_set = set(source_fields)
+    ordered_dict_fields = [
+        str(item["field"])
+        for item in dictionary_defs
+        if str(item["field"]) in source_field_set
+    ]
+    seen = set(ordered_dict_fields)
+    extra_fields = [field for field in source_fields if field not in seen]
+    ordered_fields = ordered_dict_fields + extra_fields
+
+    title_by_field = {
+        str(item["field"]): str(item["title"])
+        for item in dictionary_defs
+    }
+
+    pure_columns: list[dict[str, object]] = []
+    for field in ordered_fields:
+        pure_columns.append(
+            {
+                "title": title_by_field.get(field, field),
+                "field": field,
+                "className": "history-cell" if is_history_field(field) else "mono",
+                "isHistory": is_history_field(field),
+            }
+        )
+
+    pure_rows = [
+        {field: clean(row.get(field, "")) for field in ordered_fields}
+        for row in rows
+    ]
+    return pure_rows, pure_columns
+
+
+def build_generic_tab_rows(
+    rows: list[dict[str, str]],
+    preferred_fields: list[str] | None = None,
+    title_map: dict[str, str] | None = None,
+) -> tuple[list[dict[str, str]], list[dict[str, object]]]:
+    ordered_fields = list(rows[0].keys()) if rows else list(preferred_fields or [])
+    if preferred_fields:
+        ordered_fields = [field for field in preferred_fields if field in ordered_fields] + [
+            field for field in ordered_fields if field not in set(preferred_fields)
+        ]
+
+    columns = [
+        {
+            "title": (title_map or {}).get(field, field),
+            "field": field,
+            "className": "history-cell" if is_history_field(field) else "mono",
+            "isHistory": is_history_field(field),
+        }
+        for field in ordered_fields
+    ]
+    normalized_rows = [
+        {field: clean(row.get(field, "")) for field in ordered_fields}
+        for row in rows
+    ]
+    return normalized_rows, columns
 
 
 @dataclass
@@ -622,16 +794,25 @@ def score_candidate(akd_row: dict[str, str], ct2_row: dict[str, str]) -> Candida
         score += 60
         reasons.append("xnumap_xdocum")
 
+    ct2_at04db = clean(ct2_row.get("CT2_AT04DB", ""))
+    if akd_xnumap and ct2_at04db and akd_xnumap == ct2_at04db:
+        score += 55
+        reasons.append("xnumap_at04db")
+
     linked_ct2_recno = ct2_recno_from_akd_xdoc(akd_row.get("AKD_XDOC", ""))
     if linked_ct2_recno and linked_ct2_recno == normalize_recno(ct2_row.get("R_E_C_N_O_", "")):
         score += 85
         reasons.append("akd_xdoc_ct2_recno")
 
-    shared_doc9 = extract_9digit_doc_keys(akd_row.get("AKD_CHAVE", "")) & extract_9digit_doc_keys(ct2_row.get("CT2_KEY", ""))
-    if shared_doc9:
-        strongest_doc9 = max(shared_doc9, key=len)
-        score += 24
-        reasons.append(f"doc9_chave_key:{strongest_doc9}")
+    shared_key_tokens = extract_structured_key_tokens(akd_row.get("AKD_CHAVE", "")) & extract_structured_key_tokens(ct2_row.get("CT2_KEY", ""))
+    if shared_key_tokens:
+        strongest_key = max(shared_key_tokens, key=len)
+        if len(shared_key_tokens) >= 2:
+            score += 30
+            reasons.append(f"chave_estruturada_2:{strongest_key}")
+        else:
+            score += 20
+            reasons.append(f"chave_estruturada_1:{strongest_key}")
 
     shared_doc_keys = row_doc_keys_akd(akd_row) & row_doc_keys_ct2(ct2_row)
     if shared_doc_keys:
@@ -724,10 +905,11 @@ def build_candidate_pairs(
     ct2_by_recno = {normalize_recno(row["R_E_C_N_O_"]): row for row in ct2_rows}
     ct2_by_xdoc = rows_by_key(ct2_rows, "CT2_XDOC")
     ct2_by_xdocum = rows_by_key(ct2_rows, "CT2_XDOCUM")
+    ct2_by_at04db = rows_by_key(ct2_rows, "CT2_AT04DB")
     ct2_by_month_value: dict[tuple[str, Decimal], list[dict[str, str]]] = defaultdict(list)
     ct2_by_doc_key: dict[str, list[dict[str, str]]] = defaultdict(list)
-    ct2_by_doc9: dict[str, list[dict[str, str]]] = defaultdict(list)
-    akd_doc9_freq: Counter[str] = Counter()
+    ct2_by_key_token: dict[str, list[dict[str, str]]] = defaultdict(list)
+    akd_key_token_freq: Counter[str] = Counter()
 
     for row in ct2_rows:
         month = month_from_ct2_row(row)
@@ -736,12 +918,12 @@ def build_candidate_pairs(
             ct2_by_month_value[(month, value)].append(row)
         for doc_key in row_doc_keys_ct2(row):
             ct2_by_doc_key[doc_key].append(row)
-        for doc9 in extract_9digit_doc_keys(row.get("CT2_KEY", "")):
-            ct2_by_doc9[doc9].append(row)
+        for key_token in extract_structured_key_tokens(row.get("CT2_KEY", "")):
+            ct2_by_key_token[key_token].append(row)
 
     for row in akd_rows:
-        for doc9 in extract_9digit_doc_keys(row.get("AKD_CHAVE", "")):
-            akd_doc9_freq[doc9] += 1
+        for key_token in extract_structured_key_tokens(row.get("AKD_CHAVE", "")):
+            akd_key_token_freq[key_token] += 1
 
     candidates: list[CandidateMatch] = []
     seen_pairs: set[tuple[str, str]] = set()
@@ -759,19 +941,24 @@ def build_candidate_pairs(
         if akd_xnumap:
             for row in ct2_by_xdocum.get(akd_xnumap, []):
                 candidate_rows[clean(row["R_E_C_N_O_"])] = row
+            for row in ct2_by_at04db.get(akd_xnumap, []):
+                candidate_rows[clean(row["R_E_C_N_O_"])] = row
 
         linked_ct2_recno = ct2_recno_from_akd_xdoc(akd_row.get("AKD_XDOC", ""))
         if linked_ct2_recno and linked_ct2_recno in ct2_by_recno:
             row = ct2_by_recno[linked_ct2_recno]
             candidate_rows[clean(row["R_E_C_N_O_"])] = row
 
-        for doc9 in extract_9digit_doc_keys(akd_row.get("AKD_CHAVE", "")):
-            ct2_doc9_rows = ct2_by_doc9.get(doc9, [])
-            if not ct2_doc9_rows:
+        for key_token in extract_structured_key_tokens(akd_row.get("AKD_CHAVE", "")):
+            ct2_key_rows = ct2_by_key_token.get(key_token, [])
+            if not ct2_key_rows:
                 continue
-            if akd_doc9_freq[doc9] > DOC9_MAX_FREQ_PER_SIDE or len(ct2_doc9_rows) > DOC9_MAX_FREQ_PER_SIDE:
+            if (
+                akd_key_token_freq[key_token] > KEY_TOKEN_MAX_FREQ_PER_SIDE
+                or len(ct2_key_rows) > KEY_TOKEN_MAX_FREQ_PER_SIDE
+            ):
                 continue
-            for row in ct2_doc9_rows:
+            for row in ct2_key_rows:
                 candidate_rows[clean(row["R_E_C_N_O_"])] = row
 
         for doc_key in row_doc_keys_akd(akd_row):
@@ -852,6 +1039,7 @@ def export_row_matches(
                 "ct2_xdoc",
                 "akd_xnumap",
                 "ct2_xdocum",
+                "ct2_at04db",
                 "akd_data",
                 "ct2_data",
                 "ct2_hist",
@@ -951,6 +1139,7 @@ def export_row_matches(
                     clean(ct2_row.get("CT2_XDOC", "")),
                     clean(akd_row.get("AKD_XNUMAP", "")),
                     clean(ct2_row.get("CT2_XDOCUM", "")),
+                    clean(ct2_row.get("CT2_AT04DB", "")),
                     clean(akd_row.get("AKD_ENT05", "")),
                     clean(ct2_row.get("CT2_DEBITO", "")),
                     clean(ct2_row.get("CT2_CREDIT", "")),
@@ -1059,6 +1248,7 @@ def export_row_matches(
                 "ct2_xdoc": clean(ct2_row.get("CT2_XDOC", "")),
                 "akd_xnumap": clean(akd_row.get("AKD_XNUMAP", "")),
                 "ct2_xdocum": clean(ct2_row.get("CT2_XDOCUM", "")),
+                "ct2_at04db": clean(ct2_row.get("CT2_AT04DB", "")),
                 "akd_conta_referencia": clean(akd_row.get("AKD_ENT05", "")),
                 "ct2_debito": clean(ct2_row.get("CT2_DEBITO", "")),
                 "ct2_credito": clean(ct2_row.get("CT2_CREDIT", "")),
@@ -1081,6 +1271,23 @@ def export_row_matches(
         )
 
     version_info = build_version_info()
+    dictionary_defs = load_dictionary_definitions()
+    akd_pure_rows, akd_pure_columns = build_pure_tab_rows(
+        akd_rows, dictionary_defs.get("AKD", [])
+    )
+    ct2_pure_rows, ct2_pure_columns = build_pure_tab_rows(
+        ct2_rows, dictionary_defs.get("CT2", [])
+    )
+    glossary_path = resolve_source_path(RAW_DIR, "GLOSSARIO-CONTAS")
+    glossary_rows = read_rows(glossary_path)
+    glossary_tab_rows, glossary_tab_columns = build_generic_tab_rows(
+        glossary_rows,
+        preferred_fields=["CT1_CONTA", "CT1_DESC01"],
+        title_map={
+            "CT1_CONTA": "Conta",
+            "CT1_DESC01": "Descricao",
+        },
+    )
 
     report_data = {
         "summary": {
@@ -1091,8 +1298,15 @@ def export_row_matches(
             "muito_forte": sum(1 for item in selected if item.confidence == "muito_forte"),
             "forte": sum(1 for item in selected if item.confidence == "forte"),
             "provavel": sum(1 for item in selected if item.confidence == "provavel"),
+            "glossario_total": len(glossary_rows),
         },
         "rows": report_rows,
+        "akd_rows": akd_pure_rows,
+        "akd_columns": akd_pure_columns,
+        "ct2_rows": ct2_pure_rows,
+        "ct2_columns": ct2_pure_columns,
+        "glossary_rows": glossary_tab_rows,
+        "glossary_columns": glossary_tab_columns,
         "akd_unmatched_rows": [
             {
                 "akd_lote": clean(row.get("AKD_LOTE", "")),
@@ -1118,6 +1332,7 @@ def export_row_matches(
                 "ct2_valor": f"{normalize_decimal(row.get('CT2_VALOR', '')) or Decimal('0.00'):.2f}",
                 "ct2_xdoc": clean(row.get("CT2_XDOC", "")),
                 "ct2_xdocum": clean(row.get("CT2_XDOCUM", "")),
+                "ct2_at04db": clean(row.get("CT2_AT04DB", "")),
                 "ct2_debito": clean(row.get("CT2_DEBITO", "")),
                 "ct2_credito": clean(row.get("CT2_CREDIT", "")),
                 "ct2_centro_debito": clean(row.get("CT2_CCD", "")),
@@ -1146,6 +1361,7 @@ def export_row_matches(
         "DOC CT2": "Documento chave da CT2 usado como uma das ancoras principais do cruzamento.",
         "AP AKD": "Numero AP da AKD, usado como segunda ancora importante de conciliacao.",
         "Doc APEX CT2": "Documento APEX da CT2 comparado com o numero AP da AKD.",
+        "AT04DB CT2": "Campo CT2_AT04DB da CT2 usado como ancora adicional para comparar com o AP da AKD.",
         "Conta Ref AKD": "Referencia de conta disponivel na AKD. No extrato atual corresponde ao campo AKD_ENT05.",
         "Debito CT2": "Conta contabil de debito do lancamento na CT2.",
         "Credito CT2": "Conta contabil de credito do lancamento na CT2.",
@@ -1192,6 +1408,7 @@ def export_row_matches(
         "DOC CT2": {"field": "ct2_xdoc", "type": "string"},
         "AP AKD": {"field": "akd_xnumap", "type": "string"},
         "Doc APEX CT2": {"field": "ct2_xdocum", "type": "string"},
+        "AT04DB CT2": {"field": "ct2_at04db", "type": "string"},
         "Conta Ref AKD": {"field": "akd_conta_referencia", "type": "string"},
         "Debito CT2": {"field": "ct2_debito", "type": "string"},
         "Credito CT2": {"field": "ct2_credito", "type": "string"},
@@ -1451,10 +1668,17 @@ def export_row_matches(
         display: grid;
         justify-items: center;
         gap: 10px;
-        padding: 10px;
+        padding: 14px 10px 12px;
         border: 1px solid #efe6da;
         border-radius: 16px;
         background: #fffdf9;
+      }}
+      .donut-shell {{
+        position: relative;
+        display: grid;
+        place-items: center;
+        width: 180px;
+        height: 180px;
       }}
       .donut {{
         width: 180px;
@@ -1469,24 +1693,23 @@ def export_row_matches(
         width: 112px;
         height: 112px;
         border-radius: 50%;
-        background: #fffaf2;
+        background: #ffffff;
         box-shadow: inset 0 0 0 1px var(--line);
       }}
       .donut-center {{
         position: absolute;
-        display: grid;
-        justify-items: center;
-        gap: 2px;
+        inset: 34px;
+        border-radius: 50%;
+        background: #ffffff;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        box-shadow: inset 0 0 0 1px rgba(239, 230, 218, 0.9);
       }}
       .donut-center strong {{
         font-size: 28px;
         color: var(--accent);
-      }}
-      .donut-center span {{
-        font-size: 12px;
-        color: var(--muted);
-        text-align: center;
-        max-width: 130px;
+        line-height: 1;
       }}
       .legend {{
         display: grid;
@@ -1549,17 +1772,163 @@ def export_row_matches(
       height: 1px;
     }}
     .table-meta {{
-      display: flex;
-      justify-content: space-between;
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
       align-items: center;
       padding: 14px 18px;
       border-bottom: 1px solid var(--line);
       background: rgba(15,118,110,0.04);
       gap: 12px;
+    }}
+    .meta-actions {{
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }}
+    .meta-actions.start {{
+      justify-content: flex-start;
+    }}
+    .meta-actions.center {{
+      justify-content: center;
+    }}
+    .meta-actions.end {{
+      justify-content: flex-end;
+    }}
+    .pager {{
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
       flex-wrap: wrap;
     }}
-    .table-meta strong {{
-      color: var(--accent);
+    .table-search {{
+      width: min(380px, 42vw);
+      min-width: 240px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 8px 12px;
+      font: inherit;
+      background: #fff;
+      color: var(--ink);
+    }}
+    .table-search::placeholder {{
+      color: var(--muted);
+    }}
+    .pager-select {{
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 8px 10px;
+      font: inherit;
+      background: #fff;
+      color: var(--ink);
+    }}
+    .pager-btn {{
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 8px 12px;
+      font: inherit;
+      background: #fff;
+      color: var(--ink);
+      cursor: pointer;
+      font-weight: 600;
+    }}
+    .pager-btn[disabled] {{
+      opacity: 0.45;
+      cursor: default;
+    }}
+    .column-tools {{
+      position: relative;
+      display: none;
+    }}
+    .column-tools.active {{
+      display: inline-flex;
+    }}
+    .column-toggle-btn {{
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 8px 12px;
+      font: inherit;
+      background: #fff;
+      color: var(--ink);
+      cursor: pointer;
+      font-weight: 600;
+    }}
+    .column-panel {{
+      display: none;
+      position: absolute;
+      right: 0;
+      top: calc(100% + 8px);
+      width: min(420px, 80vw);
+      max-height: 360px;
+      overflow: auto;
+      padding: 12px;
+      border-radius: 14px;
+      background: #fffdf8;
+      border: 1px solid var(--line);
+      box-shadow: 0 20px 35px rgba(31, 41, 55, 0.16);
+      z-index: 10;
+    }}
+    .column-tools.open .column-panel {{
+      display: block;
+    }}
+    .column-actions {{
+      display: flex;
+      gap: 8px;
+      margin-bottom: 10px;
+      flex-wrap: wrap;
+    }}
+    .mini-btn {{
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 5px 10px;
+      font: inherit;
+      font-size: 12px;
+      background: #f8f4ec;
+      color: var(--ink);
+      cursor: pointer;
+      font-weight: 600;
+    }}
+    .column-list {{
+      display: grid;
+      gap: 8px;
+    }}
+    .column-item {{
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      color: var(--ink);
+    }}
+    .column-note {{
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 8px;
+    }}
+    @media (max-width: 900px) {{
+      .table-meta {{
+        grid-template-columns: 1fr;
+      }}
+      .meta-actions.start,
+      .meta-actions.center,
+      .meta-actions.end {{
+        justify-content: stretch;
+      }}
+      .pager,
+      .column-tools.active {{
+        width: 100%;
+      }}
+      .pager {{
+        justify-content: space-between;
+      }}
+      .table-search {{
+        width: 100%;
+        min-width: 0;
+      }}
+      .pager-select,
+      .pager-btn,
+      .column-toggle-btn {{
+        flex: 1 1 0;
+        text-align: center;
+      }}
     }}
     .table-scroll {{
       overflow: auto;
@@ -1596,6 +1965,39 @@ def export_row_matches(
       th.sorted {{
         background: #eef6f4;
       }}
+    .sort-label {{
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      max-width: calc(100% - 18px);
+      cursor: pointer;
+      user-select: none;
+    }}
+    .sort-label-text {{
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }}
+    .sort-indicator {{
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 18px;
+      height: 18px;
+      border-radius: 999px;
+      border: 1px solid rgba(148, 163, 184, 0.35);
+      background: rgba(255, 255, 255, 0.72);
+      color: #94a3b8;
+      font-size: 10px;
+      line-height: 1;
+      flex: 0 0 auto;
+    }}
+    th.sorted .sort-indicator {{
+      border-color: rgba(15, 118, 110, 0.4);
+      background: #f0fdfa;
+      color: #0f766e;
+    }}
     tr:hover td {{
       background: #fffcf6;
     }}
@@ -1613,6 +2015,62 @@ def export_row_matches(
     .confidence-provavel {{ background: var(--warn-bg); color: var(--warn); }}
     .mono {{ font-family: var(--mono); }}
     .muted {{ color: var(--muted); }}
+    td.copyable-cell {{
+      padding-right: 8px;
+    }}
+    .cell-copy-wrap {{
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      min-width: 0;
+      width: 100%;
+    }}
+    .cell-copy-text {{
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: inherit;
+    }}
+    .cell-copy-btn {{
+      flex: 0 0 auto;
+      width: 26px;
+      height: 26px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      border: 1px solid rgba(148, 163, 184, 0.35);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.92);
+      color: #64748b;
+      cursor: pointer;
+      opacity: 0;
+      transition: opacity 0.18s ease, border-color 0.18s ease, color 0.18s ease, background 0.18s ease, transform 0.18s ease;
+    }}
+    td.copyable-cell:hover .cell-copy-btn,
+    td.copyable-cell:focus-within .cell-copy-btn {{
+      opacity: 1;
+    }}
+    .cell-copy-btn:hover,
+    .cell-copy-btn:focus-visible {{
+      border-color: rgba(15, 118, 110, 0.45);
+      background: #f0fdfa;
+      color: #0f766e;
+      transform: translateY(-1px);
+      outline: none;
+    }}
+    .cell-copy-btn.copied {{
+      opacity: 1;
+      border-color: rgba(15, 118, 110, 0.55);
+      background: #ccfbf1;
+      color: #0f766e;
+    }}
+    .cell-copy-btn svg {{
+      width: 15px;
+      height: 15px;
+      pointer-events: none;
+    }}
     .history-cell {{
       white-space: nowrap;
       overflow: hidden;
@@ -1620,6 +2078,12 @@ def export_row_matches(
     }}
     .history-expanded {{
       max-width: none !important;
+      overflow: visible;
+      text-overflow: clip;
+    }}
+    .history-expanded .cell-copy-text {{
+      overflow: visible;
+      text-overflow: clip;
     }}
     .col-resizer {{
       position: absolute;
@@ -1753,10 +2217,6 @@ def export_row_matches(
 
       <section class="filters">
       <div class="field">
-        <label for="search" data-title="Busca livre">Busca livre</label>
-        <input id="search" type="text" placeholder="Procure em qualquer coluna: historico, documento, conta, valor, recno...">
-      </div>
-      <div class="field">
         <label for="confidence" data-title="Confianca">Confianca</label>
         <select id="confidence">
           <option value="">Todas</option>
@@ -1835,14 +2295,38 @@ def export_row_matches(
       <section class="table-wrap">
         <div class="tabs">
           <button class="tab-btn" data-tab="dashboard">Dashboard</button>
+          <button class="tab-btn" data-tab="glossary">Glossario de contas</button>
           <button class="tab-btn active" data-tab="matches">Matches</button>
           <button class="tab-btn" data-tab="akd_unmatched">AKD sem match</button>
           <button class="tab-btn" data-tab="ct2_unmatched">CT2 sem match</button>
+          <button class="tab-btn" data-tab="akd_all">AKD pura</button>
+          <button class="tab-btn" data-tab="ct2_all">CT2 pura</button>
         </div>
         <div class="dashboard-panel" id="dashboardPanel"></div>
         <div class="table-meta">
-        <div><strong id="visibleCount"></strong> <span id="visibleLabel">matches visiveis</span></div>
-          <div class="muted">Busca livre cobre todas as colunas do relatorio</div>
+          <div class="meta-actions start">
+            <div class="pager">
+              <button class="pager-btn" id="prevPageBtn" type="button">Linha anterior</button>
+              <button class="pager-btn" id="nextPageBtn" type="button">Proxima linha</button>
+              <input id="search" class="table-search" type="text" placeholder="Busca livre em qualquer coluna do relatorio">
+            </div>
+          </div>
+          <div class="meta-actions center">
+            <div class="pager">
+              <select class="pager-select" id="pageSize">
+                <option value="50">50 linhas</option>
+                <option value="100" selected>100 linhas</option>
+                <option value="200">200 linhas</option>
+                <option value="500">500 linhas</option>
+              </select>
+            </div>
+          </div>
+          <div class="meta-actions end">
+            <div class="column-tools" id="columnTools">
+              <button class="column-toggle-btn" id="columnToggleBtn" type="button">Colunas visiveis</button>
+              <div class="column-panel" id="columnPanel"></div>
+            </div>
+          </div>
         </div>
       <div class="scroll-hint">Use a barra horizontal para navegar pelas colunas da direita.</div>
         <div class="resize-hint">Arraste a borda pontilhada no lado direito da coluna para ajustar a largura ou de duplo clique para autoajustar como no Excel.</div>
@@ -1888,9 +2372,13 @@ def export_row_matches(
       const versionDateEl = document.getElementById("versionDate");
       const versionRepoEl = document.getElementById("versionRepo");
       const rowsEl = document.getElementById("rows");
-      const visibleCountEl = document.getElementById("visibleCount");
-      const visibleLabelEl = document.getElementById("visibleLabel");
       const dashboardPanelEl = document.getElementById("dashboardPanel");
+      const columnToolsEl = document.getElementById("columnTools");
+      const columnToggleBtnEl = document.getElementById("columnToggleBtn");
+      const columnPanelEl = document.getElementById("columnPanel");
+      const pageSizeEl = document.getElementById("pageSize");
+      const prevPageBtnEl = document.getElementById("prevPageBtn");
+      const nextPageBtnEl = document.getElementById("nextPageBtn");
       const searchEl = document.getElementById("search");
     const confidenceEl = document.getElementById("confidence");
     const yearFilterEl = document.getElementById("yearFilter");
@@ -1913,8 +2401,12 @@ def export_row_matches(
       const headerHelp = {json.dumps(header_help, ensure_ascii=False)};
     const filterHelp = {json.dumps(filter_help, ensure_ascii=False)};
       const sortFields = {json.dumps(sort_fields, ensure_ascii=False)};
+    const sortFieldsByField = Object.values(sortFields).reduce((acc, item) => {{
+      acc[item.field] = item;
+      return acc;
+    }}, {{}});
     const confidenceRank = {{ muito_forte: 3, forte: 2, provavel: 1 }};
-    const historyTitles = new Set(["Historico AKD", "Historico CT2"]);
+    const managedTabs = new Set(["matches", "akd_all", "ct2_all", "glossary", "akd_unmatched", "ct2_unmatched"]);
     const preferredWidths = {{
       "Confianca": 130,
       "Score": 90,
@@ -1951,10 +2443,12 @@ def export_row_matches(
         versionRepoEl.textContent = "sem repositorio";
       }}
     }}
-      let sortState = {{ title: "", direction: "" }};
+      let sortState = {{ field: "", direction: "" }};
       const expandedHistory = new Set();
+      const selectedColumnsByTab = {{}};
       let activeTab = "matches";
       let currentColumns = [];
+      let currentPage = 1;
       const tabConfigs = {{
         matches: {{
           label: "matches visiveis",
@@ -1962,6 +2456,7 @@ def export_row_matches(
           columns: [
             {{ title: "Confianca", field: "confidence", className: "confidence" }},
             {{ title: "Score", field: "score", className: "mono" }},
+            {{ title: "Motivos", field: "reasons", className: "mono" }},
             {{ title: "Lote AKD", field: "akd_lote", className: "mono" }},
             {{ title: "Lote CT2", field: "ct2_lote", className: "mono" }},
             {{ title: "Data AKD", field: "akd_data", className: "mono" }},
@@ -1972,6 +2467,7 @@ def export_row_matches(
             {{ title: "DOC CT2", field: "ct2_xdoc", className: "mono" }},
             {{ title: "AP AKD", field: "akd_xnumap", className: "mono" }},
             {{ title: "Doc APEX CT2", field: "ct2_xdocum", className: "mono" }},
+            {{ title: "AT04DB CT2", field: "ct2_at04db", className: "mono" }},
             {{ title: "Conta Ref AKD", field: "akd_conta_referencia", className: "mono" }},
             {{ title: "Debito CT2", field: "ct2_debito", className: "mono" }},
             {{ title: "Credito CT2", field: "ct2_credito", className: "mono" }},
@@ -1981,7 +2477,27 @@ def export_row_matches(
             {{ title: "Historico CT2", field: "ct2_historico", className: "history-cell", isHistory: true }},
             {{ title: "RECNO AKD", field: "recno_akd", className: "mono" }},
             {{ title: "RECNO CT2", field: "recno_ct2", className: "mono" }},
+            {{ title: "Status Data", field: "date_status", className: "mono" }},
+            {{ title: "Status Valor", field: "value_status", className: "mono" }},
+            {{ title: "Status Conta", field: "account_status", className: "mono" }},
+            {{ title: "Similaridade Texto", field: "text_similarity", className: "mono" }},
+            {{ title: "Sobreposicao Tokens", field: "token_overlap", className: "mono" }},
           ],
+        }},
+        akd_all: {{
+          label: "registros AKD",
+          rows: report.akd_rows,
+          columns: report.akd_columns,
+        }},
+        ct2_all: {{
+          label: "registros CT2",
+          rows: report.ct2_rows,
+          columns: report.ct2_columns,
+        }},
+        glossary: {{
+          label: "registros do glossario de contas",
+          rows: report.glossary_rows,
+          columns: report.glossary_columns,
         }},
         akd_unmatched: {{
           label: "registros AKD sem match",
@@ -1989,6 +2505,8 @@ def export_row_matches(
           columns: [
             {{ title: "Lote AKD", field: "akd_lote", className: "mono" }},
             {{ title: "Data AKD", field: "akd_data", className: "mono" }},
+            {{ title: "Ano AKD", field: "akd_year", className: "mono" }},
+            {{ title: "Trimestre AKD", field: "akd_quarter", className: "mono" }},
             {{ title: "Valor AKD", field: "akd_valor", className: "mono" }},
             {{ title: "DOC AKD", field: "akd_xdoc", className: "mono" }},
             {{ title: "AP AKD", field: "akd_xnumap", className: "mono" }},
@@ -2003,9 +2521,12 @@ def export_row_matches(
           columns: [
             {{ title: "Lote CT2", field: "ct2_lote", className: "mono" }},
             {{ title: "Data CT2", field: "ct2_data", className: "mono" }},
+            {{ title: "Ano CT2", field: "ct2_year", className: "mono" }},
+            {{ title: "Trimestre CT2", field: "ct2_quarter", className: "mono" }},
             {{ title: "Valor CT2", field: "ct2_valor", className: "mono" }},
             {{ title: "DOC CT2", field: "ct2_xdoc", className: "mono" }},
             {{ title: "Doc APEX CT2", field: "ct2_xdocum", className: "mono" }},
+            {{ title: "AT04DB CT2", field: "ct2_at04db", className: "mono" }},
             {{ title: "Debito CT2", field: "ct2_debito", className: "mono" }},
             {{ title: "Credito CT2", field: "ct2_credito", className: "mono" }},
             {{ title: "CC Debito CT2", field: "ct2_centro_debito", className: "mono" }},
@@ -2018,6 +2539,147 @@ def export_row_matches(
 
       yearFilterEl.innerHTML = `<option value="">Todos</option>` + report.years.map(year => `<option value="${{escapeHtml(year)}}">${{escapeHtml(year)}}</option>`).join("");
       quarterFilterEl.innerHTML = `<option value="">Todos</option>` + report.quarters.map(quarter => `<option value="${{escapeHtml(quarter)}}">${{escapeHtml(quarter)}}</option>`).join("");
+
+    function hasColumnManager(tab) {{
+      return managedTabs.has(tab);
+    }}
+
+    function defaultVisibleFields(tab) {{
+      const columns = tabConfigs[tab].columns || [];
+      if (tab === "matches") {{
+        return [
+          "confidence",
+          "score",
+          "akd_lote",
+          "ct2_lote",
+          "akd_data",
+          "ct2_data",
+          "akd_valor",
+          "ct2_valor",
+          "akd_xdoc",
+          "ct2_xdoc",
+          "akd_xnumap",
+          "ct2_xdocum",
+          "ct2_at04db",
+          "akd_conta_referencia",
+          "ct2_debito",
+          "ct2_credito",
+          "ct2_centro_debito",
+          "ct2_centro_credito",
+          "akd_historico",
+          "ct2_historico",
+          "recno_akd",
+          "recno_ct2",
+        ].filter(field => columns.some(col => col.field === field));
+      }}
+      if (tab === "akd_unmatched") {{
+        return [
+          "akd_lote",
+          "akd_data",
+          "akd_valor",
+          "akd_xdoc",
+          "akd_xnumap",
+          "akd_conta_referencia",
+          "akd_historico",
+          "recno_akd",
+        ].filter(field => columns.some(col => col.field === field));
+      }}
+      if (tab === "ct2_unmatched") {{
+        return [
+          "ct2_lote",
+          "ct2_data",
+          "ct2_valor",
+          "ct2_xdoc",
+          "ct2_xdocum",
+          "ct2_at04db",
+          "ct2_debito",
+          "ct2_credito",
+          "ct2_centro_debito",
+          "ct2_centro_credito",
+          "ct2_historico",
+          "recno_ct2",
+        ].filter(field => columns.some(col => col.field === field));
+      }}
+      if (tab === "glossary") {{
+        return [
+          "CT1_CONTA",
+          "CT1_DESC01",
+        ].filter(field => columns.some(col => col.field === field));
+      }}
+      const preferred = columns
+        .filter(col => /(FILIAL|LOTE|DATA|VALOR|HIST|XDOC|XDOCUM|XNUMAP|R_E_C_N_O_|DEBITO|CREDIT)/i.test(col.field))
+        .slice(0, 14)
+        .map(col => col.field);
+      if (preferred.length >= 8) return preferred;
+      return columns.slice(0, Math.min(14, columns.length)).map(col => col.field);
+    }}
+
+    function ensureTabState(tab) {{
+      if (!selectedColumnsByTab[tab]) {{
+        selectedColumnsByTab[tab] = new Set(defaultVisibleFields(tab));
+      }}
+    }}
+
+    function visibleColumnsForTab(tab) {{
+      const columns = tabConfigs[tab].columns || [];
+      if (!hasColumnManager(tab)) return columns;
+      ensureTabState(tab);
+      const selected = selectedColumnsByTab[tab];
+      const filtered = columns.filter(col => selected.has(col.field));
+      return filtered.length ? filtered : columns.slice(0, 1);
+    }}
+
+    function updateColumnTools() {{
+      const show = hasColumnManager(activeTab);
+      columnToolsEl.classList.toggle("active", show);
+      if (!show) {{
+        columnToolsEl.classList.remove("open");
+        columnPanelEl.innerHTML = "";
+        return;
+      }}
+      ensureTabState(activeTab);
+      const columns = tabConfigs[activeTab].columns || [];
+      const selected = selectedColumnsByTab[activeTab];
+      const hiddenCount = columns.length - selected.size;
+      columnPanelEl.innerHTML = `
+        <div class="column-actions">
+          <button class="mini-btn" type="button" data-columns-action="essenciais">Essenciais</button>
+          <button class="mini-btn" type="button" data-columns-action="todas">Todas</button>
+          <button class="mini-btn" type="button" data-columns-action="minimas">Minimas</button>
+        </div>
+        <div class="column-list">
+          ${{columns.map(col => `
+            <label class="column-item">
+              <input type="checkbox" data-column-field="${{escapeHtml(col.field)}}" ${{selected.has(col.field) ? "checked" : ""}}>
+              <span>${{escapeHtml(col.title)}}</span>
+            </label>
+          `).join("")}}
+        </div>
+        <div class="column-note">${{selected.size.toLocaleString("pt-BR")}} colunas visiveis, ${{hiddenCount.toLocaleString("pt-BR")}} ocultas.</div>
+      `;
+    }}
+
+    function paginateRows(rows) {{
+      const pageSize = Number(pageSizeEl.value || 100);
+      const totalPages = Math.max(1, Math.ceil(rows.length / pageSize));
+      if (currentPage > totalPages) currentPage = totalPages;
+      if (currentPage < 1) currentPage = 1;
+      const start = (currentPage - 1) * pageSize;
+      const end = start + pageSize;
+      return {{
+        rows: rows.slice(start, end),
+        pageSize,
+        totalPages,
+        start: rows.length ? start + 1 : 0,
+        end: Math.min(end, rows.length),
+        total: rows.length,
+      }};
+    }}
+
+    function updatePager(meta) {{
+      prevPageBtnEl.disabled = currentPage <= 1;
+      nextPageBtnEl.disabled = currentPage >= meta.totalPages;
+    }}
 
     function escapeHtml(value) {{
       return String(value ?? "")
@@ -2032,13 +2694,33 @@ def export_row_matches(
       return `<span class="pill confidence-${{value}}">${{label}}</span>`;
     }}
 
-    function renderHeader(title) {{
-      const expand = historyTitles.has(title)
-        ? `<span class="history-toggle" data-expand-title="${{escapeHtml(title)}}" title="Expandir ou recolher a coluna de historico">EXP</span>`
+    function renderCopyButton(value) {{
+      return `
+        <button class="cell-copy-btn" type="button" data-copy-text="${{escapeHtml(value)}}" title="Copiar conteudo da celula" aria-label="Copiar conteudo da celula">
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <rect x="9" y="9" width="10" height="10" rx="2" stroke="currentColor" stroke-width="1.7"></rect>
+            <rect x="5" y="5" width="10" height="10" rx="2" stroke="currentColor" stroke-width="1.7"></rect>
+          </svg>
+        </button>
+      `;
+    }}
+
+    function renderHeader(col) {{
+      const isSorted = sortState.field === col.field;
+      const sortDirection = isSorted ? sortState.direction : "";
+      const sortIcon = sortDirection === "asc" ? "▲" : sortDirection === "desc" ? "▼" : "↕";
+      const sortHint = !sortDirection
+        ? "Clique para ordenar"
+        : sortDirection === "asc"
+          ? "Ordenado crescente. Clique para inverter."
+          : "Ordenado decrescente. Clique para limpar.";
+      const expand = col.isHistory
+        ? `<span class="history-toggle" data-expand-field="${{escapeHtml(col.field)}}" title="Expandir ou recolher a coluna de historico">EXP</span>`
         : ``;
       return `
-        <span class="sort-label" data-sort-title="${{escapeHtml(title)}}">
-          <span>${{escapeHtml(title)}}</span>
+        <span class="sort-label" data-sort-field="${{escapeHtml(col.field)}}" title="${{sortHint}}">
+          <span class="sort-label-text">${{escapeHtml(col.title)}}</span>
+          <span class="sort-indicator" aria-hidden="true">${{sortIcon}}</span>
         </span>
         ${{expand}}
         <span class="col-resizer" data-resizer></span>
@@ -2068,8 +2750,9 @@ def export_row_matches(
       headers.forEach((th, index) => {{
         if (th.dataset.manual === "1") return;
         const title = th.getAttribute("data-title") || "";
+        const field = th.getAttribute("data-field") || "";
         const base = preferredWidths[title] || Number(th.getAttribute("data-width") || "120");
-        if (historyTitles.has(title) && expandedHistory.has(title)) {{
+        if (th.dataset.history === "1" && expandedHistory.has(field)) {{
           th.style.width = "900px";
           return;
         }}
@@ -2080,7 +2763,7 @@ def export_row_matches(
           const text = (cell.textContent || "").trim();
           maxLen = Math.max(maxLen, text.length);
         }});
-        const isHistory = title === "Historico AKD" || title === "Historico CT2";
+        const isHistory = th.dataset.history === "1";
         const cap = isHistory ? 360 : 240;
         const floor = isHistory ? 240 : Math.max(90, base - 10);
         const computed = Math.min(cap, Math.max(floor, Math.min(maxLen, 28) * 7 + 34, base));
@@ -2100,7 +2783,7 @@ def export_row_matches(
         const text = (cell.textContent || "").trim();
         maxLen = Math.max(maxLen, text.length);
       }});
-      const isHistory = title === "Historico AKD" || title === "Historico CT2";
+      const isHistory = th.dataset.history === "1";
       const cap = isHistory ? 900 : 340;
       const floor = isHistory ? 240 : Math.max(90, base - 10);
       const computed = Math.min(cap, Math.max(floor, Math.min(maxLen, 120) * 7 + 34, base));
@@ -2153,9 +2836,9 @@ def export_row_matches(
         }});
       }}
 
-    function parseSortableValue(row, title) {{
-      const config = sortFields[title];
-      if (!config) return "";
+    function parseSortableValue(row, field) {{
+      const config = sortFieldsByField[field];
+      if (!config) return String(row[field] ?? "").toLowerCase();
       const value = row[config.field];
       if (config.type === "number") {{
         const parsed = Number(String(value ?? "").replace(",", "."));
@@ -2168,11 +2851,11 @@ def export_row_matches(
     }}
 
     function sortRows(rows) {{
-      if (!sortState.title || !sortState.direction) return rows;
+      if (!sortState.field || !sortState.direction) return rows;
       const direction = sortState.direction === "asc" ? 1 : -1;
       return [...rows].sort((a, b) => {{
-        const va = parseSortableValue(a, sortState.title);
-        const vb = parseSortableValue(b, sortState.title);
+        const va = parseSortableValue(a, sortState.field);
+        const vb = parseSortableValue(b, sortState.field);
         if (va < vb) return -1 * direction;
         if (va > vb) return 1 * direction;
         return 0;
@@ -2239,18 +2922,62 @@ def export_row_matches(
     function renderThead() {{
       const theadRow = resultTableEl.querySelector("thead tr");
       theadRow.innerHTML = currentColumns
-        .map(col => `<th data-title="${{escapeHtml(col.title)}}" data-width="${{preferredWidths[col.title] || 120}}">${{col.title}}</th>`)
+        .map(col => `<th data-title="${{escapeHtml(col.title)}}" data-field="${{escapeHtml(col.field)}}" data-history="${{col.isHistory ? "1" : "0"}}" data-width="${{preferredWidths[col.title] || 120}}">${{col.title}}</th>`)
         .join("");
     }}
 
     function renderBodyCell(row, col) {{
       const rawValue = row[col.field] ?? "";
-      if (col.field === "confidence") {{
-        return `<td>${{formatConfidence(rawValue)}}</td>`;
-      }}
-      const cls = col.className ? ` class="${{col.className}}"` : "";
+      const extraClass = col.className ? ` ${{col.className}}` : "";
+      const cls = ` class="copyable-cell${{extraClass}}"`;
       const title = col.isHistory ? ` title="${{escapeHtml(rawValue)}}"` : "";
-      return `<td${{cls}}${{title}}>${{escapeHtml(rawValue)}}</td>`;
+      const content = col.field === "confidence" ? formatConfidence(rawValue) : escapeHtml(rawValue);
+      return `
+        <td${{cls}}${{title}}>
+          <div class="cell-copy-wrap">
+            <span class="cell-copy-text">${{content}}</span>
+            ${{renderCopyButton(rawValue)}}
+          </div>
+        </td>
+      `;
+    }}
+
+    async function copyTextToClipboard(value) {{
+      const text = String(value ?? "");
+      if (navigator.clipboard && window.isSecureContext) {{
+        await navigator.clipboard.writeText(text);
+        return;
+      }}
+      const textArea = document.createElement("textarea");
+      textArea.value = text;
+      textArea.setAttribute("readonly", "");
+      textArea.style.position = "fixed";
+      textArea.style.top = "-9999px";
+      document.body.appendChild(textArea);
+      textArea.select();
+      document.execCommand("copy");
+      document.body.removeChild(textArea);
+    }}
+
+    async function handleCellCopy(button) {{
+      if (!button) return;
+      const rawText = button.getAttribute("data-copy-text") || "";
+      const text = rawText
+        .replaceAll("&quot;", '"')
+        .replaceAll("&gt;", ">")
+        .replaceAll("&lt;", "<")
+        .replaceAll("&amp;", "&");
+      try {{
+        await copyTextToClipboard(text);
+        button.classList.add("copied");
+        button.title = "Copiado";
+        window.setTimeout(() => {{
+          button.classList.remove("copied");
+          button.title = "Copiar conteudo da celula";
+        }}, 1400);
+      }} catch (_error) {{
+        button.title = "Nao foi possivel copiar";
+      }}
     }}
 
     function pct(part, total) {{
@@ -2275,11 +3002,10 @@ def export_row_matches(
       return `
         <div class="donut-card">
           <div class="chart-title">${{escapeHtml(label)}}</div>
-          <div style="position:relative;">
+          <div class="donut-shell">
             <div class="donut" style="background:conic-gradient(var(--accent) 0deg ${{deg}}deg, #efe6da ${{deg}}deg 360deg);"></div>
             <div class="donut-center">
               <strong>${{pct(part, total)}}</strong>
-              <span>${{part.toLocaleString("pt-BR")}} / ${{total.toLocaleString("pt-BR")}}</span>
             </div>
           </div>
         </div>
@@ -2399,18 +3125,34 @@ def export_row_matches(
         renderDashboard();
         return;
       }}
-      currentColumns = tabConfigs[activeTab].columns;
+      updateColumnTools();
+      currentColumns = visibleColumnsForTab(activeTab);
+      if (sortState.field && !currentColumns.some(col => col.field === sortState.field) && hasColumnManager(activeTab)) {{
+        sortState = {{ field: "", direction: "" }};
+      }}
       renderThead();
       const filtered = sortRows(tabConfigs[activeTab].rows.filter(rowMatches));
-      visibleCountEl.textContent = filtered.length.toLocaleString("pt-BR");
-      visibleLabelEl.textContent = tabConfigs[activeTab].label;
+      const pageMeta = paginateRows(filtered);
+      updatePager(pageMeta);
       const headers = resultTableEl.querySelectorAll("thead th");
       headers.forEach(th => {{
         const title = th.getAttribute("data-title");
+        const field = th.getAttribute("data-field");
         if (title) {{
-          th.innerHTML = renderHeader(title);
+          const column = currentColumns.find(col => col.field === field);
+          th.innerHTML = renderHeader(column || {{ title, field: field || "", isHistory: false }});
           th.title = headerHelp[title] || title;
-          th.classList.toggle("sorted", sortState.title === title);
+          th.classList.toggle("sorted", sortState.field === field);
+          th.setAttribute(
+            "aria-sort",
+            sortState.field !== field
+              ? "none"
+              : sortState.direction === "asc"
+                ? "ascending"
+                : sortState.direction === "desc"
+                  ? "descending"
+                  : "none"
+          );
         }}
       }});
       const filterLabels = document.querySelectorAll(".filters label[data-title]");
@@ -2419,17 +3161,17 @@ def export_row_matches(
         if (title) label.innerHTML = renderFilterLabel(title);
       }});
         initColumnResize();
-        rowsEl.innerHTML = filtered.map(row => `
+        rowsEl.innerHTML = pageMeta.rows.map(row => `
           <tr>${{currentColumns.map(col => renderBodyCell(row, col)).join("")}}</tr>
         `).join("");
       const headerList = Array.from(resultTableEl.querySelectorAll("thead th"));
       headerList.forEach((th, index) => {{
-        const title = th.getAttribute("data-title") || "";
-        const expanded = expandedHistory.has(title);
+        const field = th.getAttribute("data-field") || "";
+        const expanded = expandedHistory.has(field);
         Array.from(rowsEl.querySelectorAll("tr")).forEach((row) => {{
           const cell = row.children[index];
           if (!cell) return;
-          if (expanded && historyTitles.has(title)) {{
+          if (expanded && th.dataset.history === "1") {{
             cell.classList.add("history-expanded");
           }} else {{
             cell.classList.remove("history-expanded");
@@ -2440,14 +3182,46 @@ def export_row_matches(
       syncHorizontalScroll();
     }}
 
-      [searchEl, confidenceEl, yearFilterEl, quarterFilterEl, minScoreEl, reasonEl, onlySameValueEl, dateStatusFilterEl, valueStatusFilterEl, accountStatusFilterEl].forEach(el => {{
-        el.addEventListener("input", render);
-        el.addEventListener("change", render);
+      let searchTimer = 0;
+      searchEl.addEventListener("input", () => {{
+        window.clearTimeout(searchTimer);
+        searchTimer = window.setTimeout(() => {{
+          currentPage = 1;
+          render();
+        }}, 120);
+      }});
+
+      [confidenceEl, yearFilterEl, quarterFilterEl, minScoreEl, reasonEl, onlySameValueEl, dateStatusFilterEl, valueStatusFilterEl, accountStatusFilterEl].forEach(el => {{
+        el.addEventListener("input", () => {{
+          currentPage = 1;
+          render();
+        }});
+        el.addEventListener("change", () => {{
+          currentPage = 1;
+          render();
+        }});
+      }});
+
+      pageSizeEl.addEventListener("change", () => {{
+        currentPage = 1;
+        render();
+      }});
+
+      prevPageBtnEl.addEventListener("click", () => {{
+        if (currentPage <= 1) return;
+        currentPage -= 1;
+        render();
+      }});
+
+      nextPageBtnEl.addEventListener("click", () => {{
+        currentPage += 1;
+        render();
       }});
 
       tabButtons.forEach((button) => {{
         button.addEventListener("click", () => {{
           activeTab = button.getAttribute("data-tab") || "matches";
+          currentPage = 1;
           tabButtons.forEach((item) => item.classList.toggle("active", item === button));
           render();
         }});
@@ -2464,6 +3238,7 @@ def export_row_matches(
       dateStatusFilterEl.value = "";
       valueStatusFilterEl.value = "";
       accountStatusFilterEl.value = "";
+      currentPage = 1;
       render();
     }});
 
@@ -2485,34 +3260,86 @@ def export_row_matches(
     }});
 
     document.addEventListener("click", (event) => {{
-      const sortTrigger = event.target.closest("[data-sort-title]");
-      if (sortTrigger) {{
-        const title = sortTrigger.getAttribute("data-sort-title") || "";
-        if (sortState.title !== title) {{
-          sortState = {{ title, direction: "asc" }};
-        }} else if (sortState.direction === "asc") {{
-          sortState = {{ title, direction: "desc" }};
-        }} else if (sortState.direction === "desc") {{
-          sortState = {{ title: "", direction: "" }};
-        }} else {{
-          sortState = {{ title, direction: "asc" }};
+      const copyTrigger = event.target.closest("[data-copy-text]");
+      if (copyTrigger) {{
+        handleCellCopy(copyTrigger);
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }}
+      const columnToggle = event.target.closest("#columnToggleBtn");
+      if (columnToggle) {{
+        columnToolsEl.classList.toggle("open");
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }}
+      const columnsAction = event.target.closest("[data-columns-action]");
+      if (columnsAction) {{
+        ensureTabState(activeTab);
+        const mode = columnsAction.getAttribute("data-columns-action") || "";
+        const columns = tabConfigs[activeTab].columns || [];
+        if (mode === "todas") {{
+          selectedColumnsByTab[activeTab] = new Set(columns.map(col => col.field));
+        }} else if (mode === "essenciais") {{
+          selectedColumnsByTab[activeTab] = new Set(defaultVisibleFields(activeTab));
+        }} else if (mode === "minimas") {{
+          selectedColumnsByTab[activeTab] = new Set(columns.slice(0, Math.min(8, columns.length)).map(col => col.field));
         }}
+        currentPage = 1;
+        updateColumnTools();
+        render();
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }}
+      const columnField = event.target.closest("[data-column-field]");
+      if (columnField) {{
+        ensureTabState(activeTab);
+        const field = columnField.getAttribute("data-column-field") || "";
+        const selected = selectedColumnsByTab[activeTab];
+        const checked = event.target.checked;
+        if (checked) {{
+          selected.add(field);
+        }} else if (selected.size > 1) {{
+          selected.delete(field);
+        }} else {{
+          event.target.checked = true;
+        }}
+        updateColumnTools();
         render();
         event.stopPropagation();
         return;
       }}
-      const expandTrigger = event.target.closest("[data-expand-title]");
+      const sortTrigger = event.target.closest("[data-sort-field]");
+      if (sortTrigger) {{
+        const field = sortTrigger.getAttribute("data-sort-field") || "";
+        if (sortState.field !== field) {{
+          sortState = {{ field, direction: "asc" }};
+        }} else if (sortState.direction === "asc") {{
+          sortState = {{ field, direction: "desc" }};
+        }} else if (sortState.direction === "desc") {{
+          sortState = {{ field: "", direction: "" }};
+        }} else {{
+          sortState = {{ field, direction: "asc" }};
+        }}
+        currentPage = 1;
+        render();
+        event.stopPropagation();
+        return;
+      }}
+      const expandTrigger = event.target.closest("[data-expand-field]");
       if (expandTrigger) {{
-        const title = expandTrigger.getAttribute("data-expand-title") || "";
+        const field = expandTrigger.getAttribute("data-expand-field") || "";
         const th = expandTrigger.closest("th");
-        if (expandedHistory.has(title)) {{
-          expandedHistory.delete(title);
+        if (expandedHistory.has(field)) {{
+          expandedHistory.delete(field);
           if (th) {{
             delete th.dataset.manual;
             th.style.width = "";
           }}
         }} else {{
-          expandedHistory.add(title);
+          expandedHistory.add(field);
           if (th) {{
             th.style.width = "900px";
             th.dataset.manual = "1";
@@ -2526,6 +3353,7 @@ def export_row_matches(
       const helpToggle = event.target.closest("[data-help-toggle]");
       if (helpToggle) {{
         const trigger = helpToggle.closest("[data-help]");
+        columnToolsEl.classList.remove("open");
         document.querySelectorAll("[data-help].open").forEach(item => {{
           if (item !== trigger) item.classList.remove("open");
         }});
@@ -2535,6 +3363,9 @@ def export_row_matches(
         return;
       }}
       const trigger = event.target.closest("[data-help]");
+      if (!event.target.closest("#columnTools")) {{
+        columnToolsEl.classList.remove("open");
+      }}
       document.querySelectorAll("[data-help].open").forEach(item => {{
         if (item !== trigger) item.classList.remove("open");
       }});
@@ -2562,7 +3393,12 @@ def export_row_matches(
     }
 
 
-def build_summary(akd_rows: list[dict[str, str]], ct2_rows: list[dict[str, str]]) -> dict[str, object]:
+def build_summary(
+    akd_rows: list[dict[str, str]],
+    ct2_rows: list[dict[str, str]],
+    akd_source: Path,
+    ct2_source: Path,
+) -> dict[str, object]:
     xdoc_summaries = summarize_overlap(
         akd_rows=akd_rows,
         ct2_rows=ct2_rows,
@@ -2584,8 +3420,8 @@ def build_summary(akd_rows: list[dict[str, str]], ct2_rows: list[dict[str, str]]
 
     return {
         "arquivos": {
-            "akd": "DADOS-AKD010.xlsx",
-            "ct2": "DADOS-CT2010.xlsx",
+            "akd": akd_source.name,
+            "ct2": ct2_source.name,
         },
         "linhas": {
             "akd": len(akd_rows),
@@ -2615,15 +3451,15 @@ def build_summary(akd_rows: list[dict[str, str]], ct2_rows: list[dict[str, str]]
 
 def main() -> None:
     log_step("Inicio da analise AKD x CT2")
-    akd_path = RAW_DIR / "DADOS-AKD010.xlsx"
-    ct2_path = RAW_DIR / "DADOS-CT2010.xlsx"
+    akd_path = resolve_source_path(RAW_DIR, "DADOS-AKD010")
+    ct2_path = resolve_source_path(RAW_DIR, "DADOS-CT2010")
 
-    akd_rows = read_excel_rows(akd_path)
-    ct2_rows = read_excel_rows(ct2_path)
+    akd_rows = read_rows(akd_path)
+    ct2_rows = read_rows(ct2_path)
     log_step("Aplicando filtros de origem nas bases")
     akd_rows = filter_akd_rows(akd_rows)
     ct2_rows = filter_ct2_rows(ct2_rows)
-    summary = build_summary(akd_rows, ct2_rows)
+    summary = build_summary(akd_rows, ct2_rows, akd_path, ct2_path)
 
     OUTPUT_DIR.mkdir(exist_ok=True)
     summary_path = OUTPUT_DIR / "resumo_analise.json"

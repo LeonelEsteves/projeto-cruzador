@@ -32,14 +32,14 @@ Arquivos principais:
 ## Entradas
 
 Arquivos esperados em `dados/brutos/`:
-- `DADOS-AKD010.xlsx`
-- `DADOS-CT2010.xlsx`
+- `DADOS-AKD010.csv`
+- `DADOS-CT2010.csv`
 - `GLOSSARIO-CONTAS.xlsx`
 
 Arquivos de referencia em `dados/referencia/`:
 - `DDL-AKD.txt`
 - `DDL-CT2.txt`
-- `DICIONARIO.xlsx`
+- `DICIONARIO.csv`
 
 ## Filtros De Origem
 
@@ -59,7 +59,7 @@ As principais ancoras do reconciliador sao:
 1. `AKD_XDOC = CT2_XDOC`
 2. `AKD_XNUMAP = CT2_XDOCUM`
 3. `AKD_XDOC` no formato `CT2<recno>` apontando para `CT2.R_E_C_N_O_`
-4. `AKD_CHAVE` x `CT2_KEY` por tokens de `9` digitos
+4. `AKD_CHAVE` x `CT2_KEY` por tokens estruturados e alfanumericos extraidos das chaves compostas
 5. `competencia + valor`
 6. `documentos extraidos de historico e campos auxiliares`
 
@@ -99,7 +99,7 @@ O score do match pode ser reforcado por:
 - documento igual
 - numero AP igual
 - ligacao `AKD_XDOC -> RECNO CT2`
-- token de `9` digitos entre `AKD_CHAVE` e `CT2_KEY`
+- token estruturado entre `AKD_CHAVE` e `CT2_KEY`
 - mesma competencia
 - mesma conta
 - mesmo centro de custo
@@ -125,6 +125,8 @@ Arquivos gerados em `saida/`:
 O arquivo `saida/relatorio_conciliacao.html` possui:
 - aba `Dashboard`
 - aba `Matches`
+- aba `AKD pura`
+- aba `CT2 pura`
 - aba `AKD sem match`
 - aba `CT2 sem match`
 - filtros, busca livre e ordenacao
@@ -163,7 +165,7 @@ Na versao atual, o projeto ja contempla:
 - cruzamento por valor e competencia
 - extracao avancada de documentos
 - ligacao entre `AKD_XDOC` e `RECNO` da `CT2`
-- cruzamento por tokens de `9` digitos entre `AKD_CHAVE` e `CT2_KEY`
+- cruzamento por tokens estruturados entre `AKD_CHAVE` e `CT2_KEY`
 - painel visual com dashboard e trilhas de pendencia
 - identificacao visual da versao do cruzador no HTML
 
