@@ -18,6 +18,10 @@ NS = {"main": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_DIR = ROOT / "saida"
 RAW_DIR = ROOT / "dados" / "brutos"
+CT2_ALLOWED_MOEDLC = {"01"}
+CT2_ALLOWED_DC = {"1", "2"}
+AKD_ALLOWED_TPSALD = {"LQ", "PG", "AR", "RB"}
+DOC9_MAX_FREQ_PER_SIDE = 25
 
 
 class ProgressBar:
@@ -128,6 +132,28 @@ def clean(value: object) -> str:
     return str(value).strip()
 
 
+def filter_akd_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    filtered: list[dict[str, str]] = []
+    for row in rows:
+        if clean(row.get("AKD_TPSALD", "")).upper() not in AKD_ALLOWED_TPSALD:
+            continue
+        filtered.append(row)
+    return filtered
+
+
+def filter_ct2_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    filtered: list[dict[str, str]] = []
+    for row in rows:
+        moedlc = clean(row.get("CT2_MOEDLC", ""))
+        dc = clean(row.get("CT2_DC", ""))
+        if moedlc not in CT2_ALLOWED_MOEDLC:
+            continue
+        if dc not in CT2_ALLOWED_DC:
+            continue
+        filtered.append(row)
+    return filtered
+
+
 def normalize_recno(value: object) -> str:
     text = clean(value)
     if text.endswith(".0"):
@@ -143,6 +169,52 @@ def normalize_text(value: object) -> str:
 
 def compact_text(value: object) -> str:
     return re.sub(r"\s+", " ", clean(value)).strip()
+
+
+def normalize_comp_code(value: object) -> str:
+    return re.sub(r"[^A-Z0-9]", "", normalize_text(value))
+
+
+def expand_doc_variants(token: str) -> set[str]:
+    normalized = normalize_comp_code(token)
+    if not normalized:
+        return set()
+
+    variants = {normalized}
+    if normalized.isdigit():
+        stripped = normalized.lstrip("0")
+        if stripped and len(stripped) >= 3:
+            variants.add(stripped)
+        return variants
+
+    match = re.match(r"([A-Z]+)(\d+)$", normalized)
+    if match:
+        prefix, digits = match.groups()
+        stripped = digits.lstrip("0")
+        if stripped and len(stripped) >= 3:
+            variants.add(prefix + stripped)
+            variants.add(stripped)
+    return variants
+
+
+def extract_9digit_doc_keys(value: object) -> set[str]:
+    text = clean(value)
+    if not text:
+        return set()
+
+    keys: set[str] = set()
+    for token in re.findall(r"\d{9}", text):
+        if token == "000000000":
+            continue
+        if token.startswith(("2024", "2025", "2026", "2027")):
+            continue
+        if token in {"011001000", "101001000", "000010101"}:
+            continue
+        keys.add(token)
+        stripped = token.lstrip("0")
+        if stripped and len(stripped) >= 5:
+            keys.add(stripped)
+    return keys
 
 
 def normalize_decimal(value: object) -> Decimal | None:
@@ -279,6 +351,92 @@ def row_text_akd(row: dict[str, str]) -> str:
 
 def row_text_ct2(row: dict[str, str]) -> str:
     return compact_text(row.get("CT2_HIST") or row.get("CT2_XDOC") or row.get("CT2_XDOCUM")).upper()
+
+
+def extract_doc_keys(value: object) -> set[str]:
+    text = normalize_text(value)
+    if not text:
+        return set()
+
+    keys: set[str] = set()
+
+    labeled_patterns = [
+        r"\bREF(?:ERENTE)?\s+DOC(?:UMENTO)?\s*(?:N[ROº°.:/-]*)?\s*([A-Z0-9./_-]{3,})",
+        r"\bDOC(?:UMENTO)?\s*(?:N[ROº°.:/-]*)?\s*([A-Z0-9./_-]{3,})",
+        r"\bNF(?:E|S|SE)?\s*(?:N[ROº°.:/-]*)?\s*([A-Z0-9./_-]{3,})",
+        r"\bAP\s*(?:N[ROº°.:/-]*)?\s*([A-Z0-9./_-]{3,})",
+        r"\bNR\s*[:/-]?\s*([A-Z0-9./_-]{3,})",
+    ]
+    for pattern in labeled_patterns:
+        for raw in re.findall(pattern, text):
+            head = re.split(r"\s|-", raw, maxsplit=1)[0]
+            keys.update(expand_doc_variants(head))
+
+    prefixed_patterns = [
+        r"\b(?:SEU|SE|SF|AK|AP|FFC|RFB|DOC)\s*[-_/ ]?\s*\d{3,}(?:[-_/ ]?\d{2,4})?\b",
+        r"\b[A-Z]-\d{3,4}\b",
+        r"\b[A-Z]{1,3}\d{3,}\b",
+    ]
+    for pattern in prefixed_patterns:
+        for raw in re.findall(pattern, text):
+            keys.update(expand_doc_variants(raw))
+
+    for raw in re.findall(r"\b\d{5,}\b", text):
+        if raw.startswith(("2024", "2025", "2026", "2027")):
+            continue
+        if raw in {"01012026", "01012025", "31122025", "31122026"}:
+            continue
+        keys.update(expand_doc_variants(raw))
+
+    for raw in re.findall(r"[A-Z0-9][A-Z0-9./_-]{3,}", text):
+        token = normalize_comp_code(raw)
+        if len(token) < 4:
+            continue
+        letters = sum(ch.isalpha() for ch in token)
+        digits = sum(ch.isdigit() for ch in token)
+        if letters >= 1 and digits >= 2:
+            keys.update(expand_doc_variants(token))
+
+    return keys
+
+
+def row_doc_keys_akd(row: dict[str, str]) -> set[str]:
+    fields = [
+        row.get("AKD_XDOC", ""),
+        row.get("AKD_XNUMAP", ""),
+        row.get("AKD_CHAVE", ""),
+        row.get("AKD_IDREF", ""),
+        row.get("AKD_XHISTO", ""),
+        row.get("AKD_HIST", ""),
+    ]
+    keys: set[str] = set()
+    for field in fields:
+        keys.update(extract_doc_keys(field))
+    keys.update(extract_9digit_doc_keys(row.get("AKD_CHAVE", "")))
+    return keys
+
+
+def row_doc_keys_ct2(row: dict[str, str]) -> set[str]:
+    fields = [
+        row.get("CT2_XDOC", ""),
+        row.get("CT2_XDOCUM", ""),
+        row.get("CT2_XNUMCT", ""),
+        row.get("CT2_DOC", ""),
+        row.get("CT2_HIST", ""),
+    ]
+    keys: set[str] = set()
+    for field in fields:
+        keys.update(extract_doc_keys(field))
+    keys.update(extract_9digit_doc_keys(row.get("CT2_KEY", "")))
+    return keys
+
+
+def ct2_recno_from_akd_xdoc(value: object) -> str:
+    text = clean(value).upper()
+    match = re.match(r"^CT2(\d+)$", text)
+    if not match:
+        return ""
+    return match.group(1).lstrip("0") or "0"
 
 
 def row_account_ct2(row: dict[str, str]) -> str:
@@ -426,6 +584,27 @@ def score_candidate(akd_row: dict[str, str], ct2_row: dict[str, str]) -> Candida
         score += 60
         reasons.append("xnumap_xdocum")
 
+    linked_ct2_recno = ct2_recno_from_akd_xdoc(akd_row.get("AKD_XDOC", ""))
+    if linked_ct2_recno and linked_ct2_recno == normalize_recno(ct2_row.get("R_E_C_N_O_", "")):
+        score += 85
+        reasons.append("akd_xdoc_ct2_recno")
+
+    shared_doc9 = extract_9digit_doc_keys(akd_row.get("AKD_CHAVE", "")) & extract_9digit_doc_keys(ct2_row.get("CT2_KEY", ""))
+    if shared_doc9:
+        strongest_doc9 = max(shared_doc9, key=len)
+        score += 24
+        reasons.append(f"doc9_chave_key:{strongest_doc9}")
+
+    shared_doc_keys = row_doc_keys_akd(akd_row) & row_doc_keys_ct2(ct2_row)
+    if shared_doc_keys:
+        strongest_doc = max(shared_doc_keys, key=len)
+        if len(shared_doc_keys) >= 2:
+            score += 42
+            reasons.append(f"doc_extra_2:{strongest_doc}")
+        else:
+            score += 28
+            reasons.append(f"doc_extra_1:{strongest_doc}")
+
     akd_month = month_from_akd_date(akd_row.get("AKD_DATA", ""))
     ct2_month = month_from_ct2_row(ct2_row)
     if akd_month and ct2_month and akd_month == ct2_month:
@@ -437,6 +616,23 @@ def score_candidate(akd_row: dict[str, str], ct2_row: dict[str, str]) -> Candida
     if akd_ent05 and ct2_account and akd_ent05 == ct2_account:
         score += 18
         reasons.append("ent05_conta")
+
+    akd_cc = clean(akd_row.get("AKD_CC", ""))
+    ct2_ccd = clean(ct2_row.get("CT2_CCD", ""))
+    ct2_ccc = clean(ct2_row.get("CT2_CCC", ""))
+    if akd_cc and (akd_cc == ct2_ccd or akd_cc == ct2_ccc):
+        score += 10
+        reasons.append("cc")
+
+    akd_clvlr = clean(akd_row.get("AKD_CLVLR", ""))
+    if akd_clvlr and (akd_clvlr == clean(ct2_row.get("CT2_CLVLDB", "")) or akd_clvlr == clean(ct2_row.get("CT2_CLVLCR", ""))):
+        score += 10
+        reasons.append("classe_valor")
+
+    akd_item = clean(akd_row.get("AKD_ITCTB", ""))
+    if akd_item and (akd_item == clean(ct2_row.get("CT2_ITEMD", "")) or akd_item == clean(ct2_row.get("CT2_ITEMC", ""))):
+        score += 8
+        reasons.append("item_contabil")
 
     text_akd = row_text_akd(akd_row)
     text_ct2 = row_text_ct2(ct2_row)
@@ -487,15 +683,27 @@ def build_candidate_pairs(
     akd_rows: list[dict[str, str]], ct2_rows: list[dict[str, str]]
 ) -> list[CandidateMatch]:
     log_step("Montando indices auxiliares para candidatos")
+    ct2_by_recno = {normalize_recno(row["R_E_C_N_O_"]): row for row in ct2_rows}
     ct2_by_xdoc = rows_by_key(ct2_rows, "CT2_XDOC")
     ct2_by_xdocum = rows_by_key(ct2_rows, "CT2_XDOCUM")
     ct2_by_month_value: dict[tuple[str, Decimal], list[dict[str, str]]] = defaultdict(list)
+    ct2_by_doc_key: dict[str, list[dict[str, str]]] = defaultdict(list)
+    ct2_by_doc9: dict[str, list[dict[str, str]]] = defaultdict(list)
+    akd_doc9_freq: Counter[str] = Counter()
 
     for row in ct2_rows:
         month = month_from_ct2_row(row)
         value = normalize_decimal(row.get("CT2_VALOR", ""))
         if month and value is not None:
             ct2_by_month_value[(month, value)].append(row)
+        for doc_key in row_doc_keys_ct2(row):
+            ct2_by_doc_key[doc_key].append(row)
+        for doc9 in extract_9digit_doc_keys(row.get("CT2_KEY", "")):
+            ct2_by_doc9[doc9].append(row)
+
+    for row in akd_rows:
+        for doc9 in extract_9digit_doc_keys(row.get("AKD_CHAVE", "")):
+            akd_doc9_freq[doc9] += 1
 
     candidates: list[CandidateMatch] = []
     seen_pairs: set[tuple[str, str]] = set()
@@ -512,6 +720,24 @@ def build_candidate_pairs(
         akd_xnumap = clean(akd_row.get("AKD_XNUMAP", ""))
         if akd_xnumap:
             for row in ct2_by_xdocum.get(akd_xnumap, []):
+                candidate_rows[clean(row["R_E_C_N_O_"])] = row
+
+        linked_ct2_recno = ct2_recno_from_akd_xdoc(akd_row.get("AKD_XDOC", ""))
+        if linked_ct2_recno and linked_ct2_recno in ct2_by_recno:
+            row = ct2_by_recno[linked_ct2_recno]
+            candidate_rows[clean(row["R_E_C_N_O_"])] = row
+
+        for doc9 in extract_9digit_doc_keys(akd_row.get("AKD_CHAVE", "")):
+            ct2_doc9_rows = ct2_by_doc9.get(doc9, [])
+            if not ct2_doc9_rows:
+                continue
+            if akd_doc9_freq[doc9] > DOC9_MAX_FREQ_PER_SIDE or len(ct2_doc9_rows) > DOC9_MAX_FREQ_PER_SIDE:
+                continue
+            for row in ct2_doc9_rows:
+                candidate_rows[clean(row["R_E_C_N_O_"])] = row
+
+        for doc_key in row_doc_keys_akd(akd_row):
+            for row in ct2_by_doc_key.get(doc_key, []):
                 candidate_rows[clean(row["R_E_C_N_O_"])] = row
 
         akd_month = month_from_akd_date(akd_row.get("AKD_DATA", ""))
@@ -818,6 +1044,8 @@ def export_row_matches(
 
     report_data = {
         "summary": {
+            "akd_total": len(akd_rows),
+            "ct2_total": len(ct2_rows),
             "matches_selecionados": len(selected),
             "candidatos_gerados": len(candidates),
             "muito_forte": sum(1 for item in selected if item.confidence == "muito_forte"),
@@ -991,37 +1219,9 @@ def export_row_matches(
       max-width: 900px;
       color: rgba(255,255,255,0.88);
     }}
-    .cards {{
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-      gap: 14px;
-      margin: 18px 0 22px;
-    }}
-    .card {{
-      background: var(--panel);
-      border: 1px solid rgba(255,255,255,0.2);
-      border-radius: 18px;
-      padding: 18px;
-      box-shadow: var(--shadow);
-    }}
-    .card .label {{
-      font-size: 12px;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      color: var(--muted);
-      margin-bottom: 6px;
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      width: fit-content;
-    }}
-    .card .value {{
-      font-size: 28px;
-      font-weight: 700;
-    }}
-    .filters {{
-      background: var(--panel);
-      border: 1px solid var(--line);
+      .filters {{
+        background: var(--panel);
+        border: 1px solid var(--line);
       border-radius: 20px;
       padding: 18px;
       box-shadow: var(--shadow);
@@ -1083,6 +1283,180 @@ def export_row_matches(
         background: var(--accent);
         color: white;
         border-color: var(--accent);
+      }}
+      .dashboard-panel {{
+        display: none;
+        padding: 18px;
+      }}
+      .dashboard-panel.active {{
+        display: block;
+      }}
+      .dashboard-grid {{
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 14px;
+      }}
+      .dash-card {{
+        background: #fffaf2;
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        padding: 16px;
+      }}
+      .dash-card .kicker {{
+        font-size: 12px;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }}
+      .dash-card .big {{
+        font-size: 30px;
+        font-weight: 800;
+        margin-top: 6px;
+        color: var(--accent);
+      }}
+      .dash-card .small {{
+        margin-top: 6px;
+        color: var(--muted);
+        font-size: 13px;
+      }}
+      .chart-card {{
+        margin-top: 16px;
+        background: #fffaf2;
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        padding: 18px;
+      }}
+      .chart-subtitle {{
+        margin: -6px 0 14px;
+        color: var(--muted);
+        font-size: 13px;
+      }}
+      .chart-title {{
+        font-size: 14px;
+        font-weight: 700;
+        margin-bottom: 14px;
+      }}
+      .bar-group {{
+        display: grid;
+        gap: 12px;
+      }}
+      .bar-row {{
+        display: grid;
+        grid-template-columns: 140px 1fr 80px;
+        gap: 12px;
+        align-items: center;
+      }}
+      .bar-label {{
+        font-size: 13px;
+        color: var(--ink);
+        font-weight: 600;
+      }}
+      .bar-track {{
+        height: 14px;
+        background: #efe6da;
+        border-radius: 999px;
+        overflow: hidden;
+      }}
+      .bar-fill {{
+        height: 100%;
+        background: linear-gradient(90deg, #0f766e, #14b8a6);
+        border-radius: 999px;
+      }}
+      .bar-fill.warn {{
+        background: linear-gradient(90deg, #b45309, #f59e0b);
+      }}
+      .bar-value {{
+        text-align: right;
+        font-size: 13px;
+        color: var(--muted);
+        font-weight: 700;
+      }}
+      .donut-wrap {{
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+        gap: 18px;
+      }}
+      .donut-card {{
+        display: grid;
+        justify-items: center;
+        gap: 10px;
+        padding: 10px;
+        border: 1px solid #efe6da;
+        border-radius: 16px;
+        background: #fffdf9;
+      }}
+      .donut {{
+        width: 180px;
+        height: 180px;
+        border-radius: 50%;
+        display: grid;
+        place-items: center;
+        background: conic-gradient(var(--accent) 0deg, var(--accent) 0deg, #efe6da 0deg 360deg);
+      }}
+      .donut::after {{
+        content: "";
+        width: 112px;
+        height: 112px;
+        border-radius: 50%;
+        background: #fffaf2;
+        box-shadow: inset 0 0 0 1px var(--line);
+      }}
+      .donut-center {{
+        position: absolute;
+        display: grid;
+        justify-items: center;
+        gap: 2px;
+      }}
+      .donut-center strong {{
+        font-size: 28px;
+        color: var(--accent);
+      }}
+      .donut-center span {{
+        font-size: 12px;
+        color: var(--muted);
+        text-align: center;
+        max-width: 130px;
+      }}
+      .legend {{
+        display: grid;
+        gap: 8px;
+        width: 100%;
+        margin-top: 4px;
+      }}
+      .legend-row {{
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        font-size: 13px;
+      }}
+      .legend-left {{
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--ink);
+      }}
+      .legend-dot {{
+        width: 12px;
+        height: 12px;
+        border-radius: 999px;
+        flex: 0 0 12px;
+      }}
+      .legend-value {{
+        color: var(--muted);
+        font-weight: 700;
+      }}
+      .insight-list {{
+        display: grid;
+        gap: 10px;
+      }}
+      .insight-item {{
+        border-left: 4px solid var(--accent);
+        background: #fffdf9;
+        border-radius: 12px;
+        padding: 12px 14px;
+        color: var(--ink);
+        line-height: 1.45;
       }}
     .scroll-hint {{
       padding: 10px 18px 0;
@@ -1301,15 +1675,7 @@ def export_row_matches(
       <p>Conferir a conciliacao entre as bases AKD e CT2.</p>
     </section>
 
-    <section class="cards">
-      <div class="card"><div class="label" data-title="Matches Selecionados">Matches Selecionados</div><div class="value" id="sumMatches"></div></div>
-      <div class="card"><div class="label" data-title="Candidatos Gerados">Candidatos Gerados</div><div class="value" id="sumCandidates"></div></div>
-      <div class="card"><div class="label" data-title="Muito Forte">Muito Forte</div><div class="value" id="sumMuitoForte"></div></div>
-      <div class="card"><div class="label" data-title="Forte">Forte</div><div class="value" id="sumForte"></div></div>
-      <div class="card"><div class="label" data-title="Provavel">Provavel</div><div class="value" id="sumProvavel"></div></div>
-    </section>
-
-    <section class="filters">
+      <section class="filters">
       <div class="field">
         <label for="search" data-title="Busca livre">Busca livre</label>
         <input id="search" type="text" placeholder="Procure em qualquer coluna: historico, documento, conta, valor, recno...">
@@ -1392,10 +1758,12 @@ def export_row_matches(
 
       <section class="table-wrap">
         <div class="tabs">
+          <button class="tab-btn" data-tab="dashboard">Dashboard</button>
           <button class="tab-btn active" data-tab="matches">Matches</button>
           <button class="tab-btn" data-tab="akd_unmatched">AKD sem match</button>
           <button class="tab-btn" data-tab="ct2_unmatched">CT2 sem match</button>
         </div>
+        <div class="dashboard-panel" id="dashboardPanel"></div>
         <div class="table-meta">
         <div><strong id="visibleCount"></strong> <span id="visibleLabel">matches visiveis</span></div>
           <div class="muted">Busca livre cobre todas as colunas do relatorio</div>
@@ -1443,6 +1811,7 @@ def export_row_matches(
       const rowsEl = document.getElementById("rows");
       const visibleCountEl = document.getElementById("visibleCount");
       const visibleLabelEl = document.getElementById("visibleLabel");
+      const dashboardPanelEl = document.getElementById("dashboardPanel");
       const searchEl = document.getElementById("search");
     const confidenceEl = document.getElementById("confidence");
     const yearFilterEl = document.getElementById("yearFilter");
@@ -1454,15 +1823,17 @@ def export_row_matches(
     const valueStatusFilterEl = document.getElementById("valueStatusFilter");
     const accountStatusFilterEl = document.getElementById("accountStatusFilter");
     const resetBtn = document.getElementById("resetBtn");
-    const topScrollEl = document.getElementById("topScroll");
-    const topScrollInnerEl = document.getElementById("topScrollInner");
+      const topScrollEl = document.getElementById("topScroll");
+      const topScrollInnerEl = document.getElementById("topScrollInner");
       const tableWrapEl = document.querySelector(".table-scroll");
+      const tableMetaEl = document.querySelector(".table-meta");
+      const scrollHintEl = document.querySelector(".scroll-hint");
+      const resizeHintEl = document.querySelector(".resize-hint");
       const resultTableEl = document.getElementById("resultTable");
       const tabButtons = Array.from(document.querySelectorAll("[data-tab]"));
       const headerHelp = {json.dumps(header_help, ensure_ascii=False)};
     const filterHelp = {json.dumps(filter_help, ensure_ascii=False)};
-    const summaryHelp = {json.dumps(summary_help, ensure_ascii=False)};
-    const sortFields = {json.dumps(sort_fields, ensure_ascii=False)};
+      const sortFields = {json.dumps(sort_fields, ensure_ascii=False)};
     const confidenceRank = {{ muito_forte: 3, forte: 2, provavel: 1 }};
     const historyTitles = new Set(["Historico AKD", "Historico CT2"]);
     const preferredWidths = {{
@@ -1553,13 +1924,8 @@ def export_row_matches(
         }},
       }};
 
-    document.getElementById("sumMatches").textContent = report.summary.matches_selecionados.toLocaleString("pt-BR");
-    document.getElementById("sumCandidates").textContent = report.summary.candidatos_gerados.toLocaleString("pt-BR");
-    document.getElementById("sumMuitoForte").textContent = report.summary.muito_forte.toLocaleString("pt-BR");
-    document.getElementById("sumForte").textContent = report.summary.forte.toLocaleString("pt-BR");
-    document.getElementById("sumProvavel").textContent = report.summary.provavel.toLocaleString("pt-BR");
-    yearFilterEl.innerHTML = `<option value="">Todos</option>` + report.years.map(year => `<option value="${{escapeHtml(year)}}">${{escapeHtml(year)}}</option>`).join("");
-    quarterFilterEl.innerHTML = `<option value="">Todos</option>` + report.quarters.map(quarter => `<option value="${{escapeHtml(quarter)}}">${{escapeHtml(quarter)}}</option>`).join("");
+      yearFilterEl.innerHTML = `<option value="">Todos</option>` + report.years.map(year => `<option value="${{escapeHtml(year)}}">${{escapeHtml(year)}}</option>`).join("");
+      quarterFilterEl.innerHTML = `<option value="">Todos</option>` + report.quarters.map(quarter => `<option value="${{escapeHtml(quarter)}}">${{escapeHtml(quarter)}}</option>`).join("");
 
     function escapeHtml(value) {{
       return String(value ?? "")
@@ -1600,22 +1966,9 @@ def export_row_matches(
       `;
     }}
 
-    function renderSummaryLabel(title) {{
-      const help = summaryHelp[title] || "";
-      return `
-        <span class="th-help" data-help>
-          <span class="help-toggle" data-help-toggle>
-            <span>${{escapeHtml(title)}}</span>
-            <span class="help-dot">i</span>
-          </span>
-          <span class="help-pop">${{escapeHtml(help)}}</span>
-        </span>
-      `;
-    }}
-
-    function syncHorizontalScroll() {{
-      topScrollInnerEl.style.width = `${{resultTableEl.scrollWidth}}px`;
-    }}
+      function syncHorizontalScroll() {{
+        topScrollInnerEl.style.width = `${{resultTableEl.scrollWidth}}px`;
+      }}
 
     function autoFitColumns() {{
       const headers = Array.from(resultTableEl.querySelectorAll("thead th"));
@@ -1808,7 +2161,152 @@ def export_row_matches(
       return `<td${{cls}}${{title}}>${{escapeHtml(rawValue)}}</td>`;
     }}
 
+    function pct(part, total) {{
+      if (!total) return "0,00%";
+      return ((part / total) * 100).toLocaleString("pt-BR", {{ minimumFractionDigits: 2, maximumFractionDigits: 2 }}) + "%";
+    }}
+
+    function renderBarRow(label, part, total, warn = false) {{
+      const width = total ? Math.max(0, Math.min(100, (part / total) * 100)) : 0;
+      return `
+        <div class="bar-row">
+          <div class="bar-label">${{escapeHtml(label)}}</div>
+          <div class="bar-track"><div class="bar-fill${{warn ? " warn" : ""}}" style="width:${{width}}%"></div></div>
+          <div class="bar-value">${{pct(part, total)}}</div>
+        </div>
+      `;
+    }}
+
+    function renderDonut(label, part, total) {{
+      const ratio = total ? (part / total) : 0;
+      const deg = Math.max(0, Math.min(360, ratio * 360));
+      return `
+        <div class="donut-card">
+          <div class="chart-title">${{escapeHtml(label)}}</div>
+          <div style="position:relative;">
+            <div class="donut" style="background:conic-gradient(var(--accent) 0deg ${{deg}}deg, #efe6da ${{deg}}deg 360deg);"></div>
+            <div class="donut-center">
+              <strong>${{pct(part, total)}}</strong>
+              <span>${{part.toLocaleString("pt-BR")}} / ${{total.toLocaleString("pt-BR")}}</span>
+            </div>
+          </div>
+        </div>
+      `;
+    }}
+
+    function buildInsights() {{
+      const akdTotal = report.summary.akd_total;
+      const ct2Total = report.summary.ct2_total;
+      const matches = report.summary.matches_selecionados;
+      const akdRate = akdTotal ? (matches / akdTotal) * 100 : 0;
+      const ct2Rate = ct2Total ? (matches / ct2Total) * 100 : 0;
+      const veryStrongRate = matches ? (report.summary.muito_forte / matches) * 100 : 0;
+      const probableRate = matches ? (report.summary.provavel / matches) * 100 : 0;
+      const gap = ct2Rate - akdRate;
+      const insights = [];
+
+      insights.push(`A cobertura consolidada do cruzamento ficou em ${{pct(matches * 2, akdTotal + ct2Total)}}, com ${{matches.toLocaleString("pt-BR")}} pares finais.`);
+      insights.push(`A CT2 está com cobertura ${{gap.toLocaleString("pt-BR", {{ minimumFractionDigits: 2, maximumFractionDigits: 2 }})}} p.p. acima da AKD, sugerindo que a AKD continua mais detalhada ou mais fragmentada.`);
+      insights.push(`${{veryStrongRate.toLocaleString("pt-BR", {{ minimumFractionDigits: 2, maximumFractionDigits: 2 }})}}% dos matches estão na faixa muito forte, o que indica uma base boa para auditoria automatizada.`);
+      insights.push(`${{probableRate.toLocaleString("pt-BR", {{ minimumFractionDigits: 2, maximumFractionDigits: 2 }})}}% dos matches ficaram como prováveis, formando a trilha prioritária de revisão manual.`);
+      return insights;
+    }}
+
+    function renderDashboard() {{
+      const akdTotal = report.summary.akd_total;
+      const ct2Total = report.summary.ct2_total;
+      const matches = report.summary.matches_selecionados;
+      const akdUnmatched = report.akd_unmatched_rows.length;
+      const ct2Unmatched = report.ct2_unmatched_rows.length;
+      const combinedTotal = akdTotal + ct2Total;
+      const combinedMatched = matches * 2;
+      const combinedUnmatched = combinedTotal - combinedMatched;
+      const insights = buildInsights();
+      dashboardPanelEl.innerHTML = `
+          <div class="dashboard-grid">
+            <div class="dash-card">
+              <div class="kicker">AKD</div>
+              <div class="big">${{akdTotal.toLocaleString("pt-BR")}}</div>
+            <div class="small">registros na base AKD</div>
+          </div>
+          <div class="dash-card">
+            <div class="kicker">CT2</div>
+            <div class="big">${{ct2Total.toLocaleString("pt-BR")}}</div>
+            <div class="small">registros na base CT2</div>
+          </div>
+          <div class="dash-card">
+            <div class="kicker">Matches</div>
+            <div class="big">${{matches.toLocaleString("pt-BR")}}</div>
+            <div class="small">pares finais AKD x CT2</div>
+          </div>
+          <div class="dash-card">
+            <div class="kicker">Cobertura Total</div>
+            <div class="big">${{pct(combinedMatched, combinedTotal)}}</div>
+            <div class="small">registros consumidos em matches nas duas bases</div>
+          </div>
+          </div>
+          <div class="chart-card">
+            <div class="chart-title">Cobertura Por Base</div>
+            <div class="chart-subtitle">Percentual de registros de cada base que conseguiram entrar em um cruzamento final.</div>
+            <div class="donut-wrap">
+              ${{renderDonut("AKD dentro do cruzamento", matches, akdTotal)}}
+              ${{renderDonut("CT2 dentro do cruzamento", matches, ct2Total)}}
+            </div>
+            <div class="legend">
+              <div class="legend-row">
+                <div class="legend-left"><span class="legend-dot" style="background:#0f766e;"></span><span>Dentro do cruzamento</span></div>
+                <div class="legend-value">${{matches.toLocaleString("pt-BR")}} por base</div>
+              </div>
+              <div class="legend-row">
+                <div class="legend-left"><span class="legend-dot" style="background:#efe6da;"></span><span>Fora do cruzamento</span></div>
+                <div class="legend-value">${{(akdUnmatched + ct2Unmatched).toLocaleString("pt-BR")}} somados</div>
+              </div>
+            </div>
+          </div>
+          <div class="chart-card">
+            <div class="chart-title">Dentro x Fora</div>
+            <div class="chart-subtitle">Comparativo percentual do que entrou e do que permaneceu pendente em cada base.</div>
+            <div class="bar-group">
+              ${{renderBarRow("AKD dentro", matches, akdTotal)}}
+              ${{renderBarRow("AKD fora", akdUnmatched, akdTotal, true)}}
+              ${{renderBarRow("CT2 dentro", matches, ct2Total)}}
+              ${{renderBarRow("CT2 fora", ct2Unmatched, ct2Total, true)}}
+            ${{renderBarRow("Total dentro", combinedMatched, combinedTotal)}}
+            ${{renderBarRow("Total fora", combinedUnmatched, combinedTotal, true)}}
+          </div>
+          </div>
+          <div class="chart-card">
+            <div class="chart-title">Confianca Dos Matches</div>
+            <div class="chart-subtitle">Distribuicao dos pares finais pela forca das evidencias do reconciliador.</div>
+            <div class="bar-group">
+              ${{renderBarRow("Muito forte", report.summary.muito_forte, matches)}}
+              ${{renderBarRow("Forte", report.summary.forte, matches)}}
+              ${{renderBarRow("Provavel", report.summary.provavel, matches, true)}}
+            </div>
+          </div>
+          <div class="chart-card">
+            <div class="chart-title">Insights Do Cruzamento</div>
+            <div class="chart-subtitle">Leituras automáticas para apoiar a análise contábil e orçamentária.</div>
+            <div class="insight-list">
+              ${{insights.map(item => `<div class="insight-item">${{escapeHtml(item)}}</div>`).join("")}}
+            </div>
+          </div>
+        `;
+      }}
+
     function render() {{
+      const isDashboard = activeTab === "dashboard";
+      dashboardPanelEl.classList.toggle("active", isDashboard);
+      tableMetaEl.style.display = isDashboard ? "none" : "";
+      scrollHintEl.style.display = isDashboard ? "none" : "";
+      resizeHintEl.style.display = isDashboard ? "none" : "";
+      topScrollEl.style.display = isDashboard ? "none" : "";
+      tableWrapEl.style.display = isDashboard ? "none" : "";
+      resultTableEl.style.display = isDashboard ? "none" : "";
+      if (isDashboard) {{
+        renderDashboard();
+        return;
+      }}
       currentColumns = tabConfigs[activeTab].columns;
       renderThead();
       const filtered = sortRows(tabConfigs[activeTab].rows.filter(rowMatches));
@@ -1828,11 +2326,6 @@ def export_row_matches(
         const title = label.getAttribute("data-title");
         if (title) label.innerHTML = renderFilterLabel(title);
       }});
-      const summaryLabels = document.querySelectorAll(".cards .label[data-title]");
-      summaryLabels.forEach(label => {{
-        const title = label.getAttribute("data-title");
-        if (title) label.innerHTML = renderSummaryLabel(title);
-        }});
         initColumnResize();
         rowsEl.innerHTML = filtered.map(row => `
           <tr>${{currentColumns.map(col => renderBodyCell(row, col)).join("")}}</tr>
@@ -2034,6 +2527,9 @@ def main() -> None:
 
     akd_rows = read_excel_rows(akd_path)
     ct2_rows = read_excel_rows(ct2_path)
+    log_step("Aplicando filtros de origem nas bases")
+    akd_rows = filter_akd_rows(akd_rows)
+    ct2_rows = filter_ct2_rows(ct2_rows)
     summary = build_summary(akd_rows, ct2_rows)
 
     OUTPUT_DIR.mkdir(exist_ok=True)

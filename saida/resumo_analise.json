@@ -4,38 +4,37 @@
     "ct2": "DADOS-CT2010.xlsx"
   },
   "linhas": {
-    "akd": 68046,
-    "ct2": 49413
+    "akd": 20346,
+    "ct2": 27900
   },
   "sobreposicao_documental": {
     "akd_xdoc__ct2_xdoc": {
-      "keys_em_comum": 2573,
+      "keys_em_comum": 1683,
       "status": {
-        "forte_grupo": 570,
-        "ambiguo": 1991,
-        "forte_1x1": 12
+        "ambiguo": 1491,
+        "forte_grupo": 192
       }
     },
     "akd_xnumap__ct2_xdocum": {
-      "keys_em_comum": 1671,
+      "keys_em_comum": 1668,
       "status": {
-        "ambiguo": 1503,
-        "forte_grupo": 168
+        "ambiguo": 1595,
+        "forte_grupo": 73
       }
     }
   },
   "assinatura_residual": {
-    "akd_distinct_month_value": 15545,
-    "ct2_distinct_month_value": 22500,
-    "overlap_month_value": 9265
+    "akd_distinct_month_value": 9692,
+    "ct2_distinct_month_value": 14515,
+    "overlap_month_value": 5732
   },
   "reconciliacao_linha_a_linha": {
-    "candidatos_gerados": 206856,
-    "matches_selecionados": 17789,
+    "candidatos_gerados": 234874,
+    "matches_selecionados": 9889,
     "por_confianca": {
-      "muito_forte": 5565,
-      "forte": 9218,
-      "provavel": 3006
+      "muito_forte": 9332,
+      "forte": 84,
+      "provavel": 473
     },
     "arquivo_comparativo": "saida/comparativo_conciliacao.csv",
     "arquivo_html": "saida/relatorio_conciliacao.html"
