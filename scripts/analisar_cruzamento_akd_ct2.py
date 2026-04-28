@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -11,6 +12,7 @@ from zipfile import ZipFile
 import csv
 import json
 import re
+import subprocess
 import xml.etree.ElementTree as ET
 
 
@@ -52,6 +54,42 @@ class ProgressBar:
 
 def log_step(message: str) -> None:
     print(f"[etapa] {message}", flush=True)
+
+
+def git_output(*args: str) -> str:
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return ""
+    return result.stdout.strip()
+
+
+def build_version_info() -> dict[str, str]:
+    generated_at = datetime.now().strftime("%d/%m/%Y %H:%M")
+    branch = git_output("branch", "--show-current") or "sem_branch"
+    commit_full = git_output("rev-parse", "HEAD")
+    commit_short = git_output("rev-parse", "--short", "HEAD") or "sem_commit"
+    commit_date = git_output("show", "-s", "--format=%cs", "HEAD") or ""
+    repo_url = git_output("remote", "get-url", "origin")
+    repo_web = repo_url.removesuffix(".git") if repo_url else ""
+    commit_url = f"{repo_web}/commit/{commit_full}" if repo_web and commit_full else ""
+    return {
+        "generated_at": generated_at,
+        "branch": branch,
+        "commit_short": commit_short,
+        "commit_full": commit_full,
+        "commit_date": commit_date,
+        "repo_url": repo_url,
+        "repo_web": repo_web,
+        "commit_url": commit_url,
+    }
 
 
 def col_to_index(cell_ref: str) -> int:
@@ -1042,6 +1080,8 @@ def export_row_matches(
             }
         )
 
+    version_info = build_version_info()
+
     report_data = {
         "summary": {
             "akd_total": len(akd_rows),
@@ -1090,6 +1130,7 @@ def export_row_matches(
         ],
         "years": sorted({row["akd_year"] for row in report_rows if row["akd_year"]}),
         "quarters": sorted({row["akd_quarter"] for row in report_rows if row["akd_quarter"]}),
+        "version": version_info,
     }
 
     header_help = {
@@ -1218,6 +1259,36 @@ def export_row_matches(
       margin: 0;
       max-width: 900px;
       color: rgba(255,255,255,0.88);
+    }}
+    .version-strip {{
+      margin-top: 18px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }}
+    .version-pill {{
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 14px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.14);
+      border: 1px solid rgba(255,255,255,0.2);
+      color: rgba(255,255,255,0.96);
+      font-size: 13px;
+      line-height: 1.2;
+      backdrop-filter: blur(8px);
+    }}
+    .version-pill strong {{
+      color: white;
+    }}
+    .version-pill a {{
+      color: #fef3c7;
+      text-decoration: none;
+      font-weight: 700;
+    }}
+    .version-pill a:hover {{
+      text-decoration: underline;
     }}
       .filters {{
         background: var(--panel);
@@ -1673,6 +1744,11 @@ def export_row_matches(
     <section class="hero">
       <h1>Relatorio de Conciliacao AKD x CT2</h1>
       <p>Conferir a conciliacao entre as bases AKD e CT2.</p>
+      <div class="version-strip">
+        <div class="version-pill"><strong>Versao:</strong> <span id="versionCommit">--</span></div>
+        <div class="version-pill"><strong>Atualizado em:</strong> <span id="versionDate">--</span></div>
+        <div class="version-pill"><strong>Repositorio:</strong> <span id="versionRepo">--</span></div>
+      </div>
     </section>
 
       <section class="filters">
@@ -1808,6 +1884,9 @@ def export_row_matches(
 
     <script>
       const report = {json.dumps(report_data, ensure_ascii=False)};
+      const versionCommitEl = document.getElementById("versionCommit");
+      const versionDateEl = document.getElementById("versionDate");
+      const versionRepoEl = document.getElementById("versionRepo");
       const rowsEl = document.getElementById("rows");
       const visibleCountEl = document.getElementById("visibleCount");
       const visibleLabelEl = document.getElementById("visibleLabel");
@@ -1859,6 +1938,19 @@ def export_row_matches(
       "RECNO AKD": 120,
       "RECNO CT2": 120,
     }};
+
+    function renderVersionInfo() {{
+      const version = report.version || {{}};
+      versionCommitEl.textContent = version.commit_short || "sem commit";
+      versionDateEl.textContent = version.generated_at || "sem data";
+      if (version.commit_url && version.repo_web) {{
+        versionRepoEl.innerHTML = `<a href="${{escapeHtml(version.commit_url)}}" target="_blank" rel="noreferrer">${{escapeHtml(version.repo_web)}} @ ${{escapeHtml(version.commit_short || "")}}</a>`;
+      }} else if (version.repo_url) {{
+        versionRepoEl.textContent = version.repo_url;
+      }} else {{
+        versionRepoEl.textContent = "sem repositorio";
+      }}
+    }}
       let sortState = {{ title: "", direction: "" }};
       const expandedHistory = new Set();
       let activeTab = "matches";
@@ -2453,6 +2545,7 @@ def export_row_matches(
 
     window.addEventListener("resize", syncHorizontalScroll);
 
+    renderVersionInfo();
     render();
   </script>
 </body>
