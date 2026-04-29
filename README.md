@@ -58,11 +58,14 @@ Antes do cruzamento, o script filtra os dados com estas regras:
 As principais ancoras do reconciliador sao:
 
 1. `AKD_XDOC = CT2_XDOC`
-2. `AKD_XNUMAP = CT2_XDOCUM`
-3. `AKD_XDOC` no formato `CT2<recno>` apontando para `CT2.R_E_C_N_O_`
-4. `AKD_CHAVE` x `CT2_KEY` por tokens estruturados e alfanumericos extraidos das chaves compostas
-5. `competencia + valor`
-6. `documentos extraidos de historico e campos auxiliares`
+2. `AKD_XDOC = CT2_AT01CR`
+3. `AKD_XNUMAP = CT2_XDOCUM`
+4. `AKD_XDOC` no formato `CT2<recno>` apontando para `CT2.R_E_C_N_O_`
+5. `AKD_CHAVE` x `CT2_KEY` por tokens estruturados e alfanumericos extraidos das chaves compostas
+6. para `AKD_PROCES IN (900013, 900025, 900026)`, `AKD_HIST = CT2_HIST` com `data exata + valor igual` como ancora textual forte
+7. `documentos extraidos do historico` com filtro de qualidade e controle de frequencia
+8. `competencia + valor`
+9. `documentos extraidos de historico e campos auxiliares`
 
 ## Extracao Avancada De Documento
 
@@ -78,6 +81,7 @@ O script extrai e normaliza documentos presentes em campos como:
 
 ### CT2
 - `CT2_XDOC`
+- `CT2_AT01CR`
 - `CT2_XDOCUM`
 - `CT2_XNUMCT`
 - `CT2_DOC`
@@ -94,14 +98,23 @@ Padroes considerados:
 - prefixos como `SE`, `SF`, `AK`, `SEU`, `FFC`, `RFB`
 - variantes com e sem zeros a esquerda
 
+Filtros adicionais para documentos vindos de historico:
+- descarte de tokens genericos, datas soltas e identificadores muito curtos
+- priorizacao de documentos com perfil de identificador real, como tracking, referencia fiscal e numero documental mais longo
+- bloqueio de documentos excessivamente frequentes para reduzir falso positivo em massa
+
 ## Reforcos De Score
 
 O score do match pode ser reforcado por:
 - documento igual
+- documento AKD igual ao `CT2_AT01CR`
 - numero AP igual
+- historico exato com `data exata + valor igual` quando `AKD_PROCES IN (900013, 900025, 900026)`
 - ligacao `AKD_XDOC -> RECNO CT2`
 - token estruturado entre `AKD_CHAVE` e `CT2_KEY`
+- documento qualificado extraido do historico
 - mesma competencia
+- mesma data exata
 - mesma conta
 - mesmo centro de custo
 - mesma classe de valor
@@ -111,6 +124,7 @@ O score do match pode ser reforcado por:
 - combinacao `competencia + conta + classe de valor`
 - combinacao `competencia + CC + classe de valor`
 - evidencias documentais extraidas do historico combinadas com `competencia`, `conta`, `CC` e `classe`
+- evidencias documentais extraidas do historico combinadas com `data exata`, `conta` e `valor`
 - evidencias por chave estruturada combinadas com `competencia`, `conta` e `classe`
 - tokens em comum no historico
 - similaridade textual do historico
@@ -123,6 +137,7 @@ Arquivos gerados em `saida/`:
 - `comparativo_conciliacao.csv`
 - `resumo_analise.json`
 - `overlap_xdoc.csv`
+- `overlap_xdoc_at01cr.csv`
 - `overlap_xnumap.csv`
 - `akd_sem_match.csv`
 - `ct2_sem_match.csv`
@@ -210,11 +225,15 @@ Na versao atual, o projeto ja contempla:
 - cruzamento documental
 - cruzamento por valor e competencia
 - extracao avancada de documentos
+- extracao qualificada de documento a partir do historico com filtro de frequencia
+- ancora textual exata por historico com `data + valor` para os processos `900013`, `900025` e `900026`
 - ligacao entre `AKD_XDOC` e `RECNO` da `CT2`
+- cruzamento direto entre `AKD_XDOC` e `CT2_AT01CR`
 - cruzamento por tokens estruturados entre `AKD_CHAVE` e `CT2_KEY`
 - reforco de score para `AKD_XNUMAP -> CT2_XDOCUM` e `AKD_XNUMAP -> CT2_AT04DB`
 - blocos residuais mais amplos por `ano + valor`, `trimestre + valor`, `conta + valor`, `CC + valor` e `classe + valor`
 - reforcos compostos por `documento extra + competencia/conta/CC/classe`
+- reforcos compostos por `documento do historico + data exata/competencia + conta + valor`
 - reforcos compostos por `chave estruturada + competencia/conta/classe`
 - reforco textual para matches sem ancora direta, quando o contexto operacional converge
 - trilha segregada para grupos potenciais `1xN` e `Nx1` quando o `1x1` bloqueia candidatos muito fortes
@@ -249,6 +268,7 @@ Ele foi pensado para apoiar a descoberta de novas regras, mostrando:
 - sobreposicao entre campos cruzaveis normalizados, incluindo documento, token estruturado, conta, centro de custo, classe, item, mes, ano e trimestre
 - os melhores candidatos para cada `AKD` e `CT2` que ficaram sem match final
 - hipoteses de novas regras com base em combinacoes recorrentes de sinais como `AT04DB`, `competencia`, `conta`, `CC`, `texto`, `tokens`, `chave estruturada` e `documento extra`
+- hipoteses de novas regras com base em combinacoes recorrentes de sinais como `AT01CR`, `AT04DB`, `competencia`, `conta`, `CC`, `texto`, `tokens`, `chave estruturada` e `documento extra`
 
 ## Grupos Potenciais 1xN E Nx1
 

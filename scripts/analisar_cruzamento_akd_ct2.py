@@ -25,6 +25,8 @@ CT2_ALLOWED_MOEDLC = {"01"}
 CT2_ALLOWED_DC = {"1", "2"}
 AKD_ALLOWED_TPSALD = {"LQ", "PG", "AR", "RB"}
 KEY_TOKEN_MAX_FREQ_PER_SIDE = 40
+HISTORY_DOC_MAX_FREQ_PER_SIDE = 20
+PROCESS_HIST_EXACT_ANCHOR_CODES = {"900013", "900025"}
 
 
 class ProgressBar:
@@ -468,6 +470,38 @@ def row_text_ct2(row: dict[str, str]) -> str:
     return compact_text(row.get("CT2_HIST") or row.get("CT2_XDOC") or row.get("CT2_XDOCUM")).upper()
 
 
+def process_hist_anchor_akd(row: dict[str, str]) -> str:
+    if clean(row.get("AKD_PROCES", "")) not in PROCESS_HIST_EXACT_ANCHOR_CODES:
+        return ""
+    return compact_text(row.get("AKD_HIST", "")).upper()
+
+
+def process_hist_anchor_ct2(row: dict[str, str]) -> str:
+    return compact_text(row.get("CT2_HIST", "")).upper()
+
+
+def process_hist_anchor_signature_akd(
+    row: dict[str, str],
+) -> tuple[str, str, Decimal] | None:
+    hist = process_hist_anchor_akd(row)
+    date = clean(row.get("AKD_DATA", ""))
+    value = normalize_decimal(row.get("AKD_VALOR1", ""))
+    if not hist or not date or value is None:
+        return None
+    return hist, date, value
+
+
+def process_hist_anchor_signature_ct2(
+    row: dict[str, str],
+) -> tuple[str, str, Decimal] | None:
+    hist = process_hist_anchor_ct2(row)
+    date = derived_ct2_date(row)
+    value = normalize_decimal(row.get("CT2_VALOR", ""))
+    if not hist or not date or value is None:
+        return None
+    return hist, date, value
+
+
 def extract_doc_keys(value: object) -> set[str]:
     text = normalize_text(value)
     if not text:
@@ -515,14 +549,46 @@ def extract_doc_keys(value: object) -> set[str]:
     return keys
 
 
+def is_quality_history_doc(token: str) -> bool:
+    normalized = normalize_comp_code(token)
+    if len(normalized) < 6:
+        return False
+
+    if normalized.isdigit():
+        if len(normalized) < 8:
+            return False
+        if normalized.startswith(("2024", "2025", "2026", "2027")):
+            return False
+        return True
+
+    letters = sum(ch.isalpha() for ch in normalized)
+    digits = sum(ch.isdigit() for ch in normalized)
+    return letters >= 1 and digits >= 3
+
+
+def history_doc_keys_akd(row: dict[str, str]) -> set[str]:
+    keys: set[str] = set()
+    for field in [row.get("AKD_XHISTO", ""), row.get("AKD_HIST", "")]:
+        keys.update(
+            token for token in extract_doc_keys(field) if is_quality_history_doc(token)
+        )
+    return keys
+
+
+def history_doc_keys_ct2(row: dict[str, str]) -> set[str]:
+    return {
+        token
+        for token in extract_doc_keys(row.get("CT2_HIST", ""))
+        if is_quality_history_doc(token)
+    }
+
+
 def row_doc_keys_akd(row: dict[str, str]) -> set[str]:
     fields = [
         row.get("AKD_XDOC", ""),
         row.get("AKD_XNUMAP", ""),
         row.get("AKD_CHAVE", ""),
         row.get("AKD_IDREF", ""),
-        row.get("AKD_XHISTO", ""),
-        row.get("AKD_HIST", ""),
     ]
     keys: set[str] = set()
     for field in fields:
@@ -538,7 +604,6 @@ def row_doc_keys_ct2(row: dict[str, str]) -> set[str]:
         row.get("CT2_XNUMCT", ""),
         row.get("CT2_DOC", ""),
         row.get("CT2_KEY", ""),
-        row.get("CT2_HIST", ""),
     ]
     keys: set[str] = set()
     for field in fields:
@@ -725,6 +790,10 @@ def normalized_reason_set(reasons: str) -> set[str]:
             continue
         if base.startswith("chave_estruturada_"):
             normalized.add("chave_estruturada")
+        elif base.startswith("proc_hist_"):
+            normalized.add("proc_hist")
+        elif base.startswith("doc_hist_"):
+            normalized.add("doc_hist")
         elif base.startswith("doc_extra_"):
             normalized.add("doc_extra")
         elif base.startswith("tokens_"):
@@ -740,9 +809,12 @@ def build_group_signature(candidate: CandidateMatch) -> str:
     reasons = normalized_reason_set(candidate.reasons)
     ordered = [
         "xdoc",
+        "xdoc_at01cr",
+        "proc_hist",
         "xnumap_xdocum",
         "xnumap_at04db",
         "akd_xdoc_ct2_recno",
+        "doc_hist",
         "doc_extra",
         "chave_estruturada",
         "competencia",
@@ -759,7 +831,17 @@ def candidate_supports_group(candidate: CandidateMatch) -> bool:
     reasons = normalized_reason_set(candidate.reasons)
     has_anchor = bool(
         reasons
-        & {"xdoc", "xnumap_xdocum", "xnumap_at04db", "akd_xdoc_ct2_recno", "doc_extra", "chave_estruturada"}
+        & {
+            "xdoc",
+            "xdoc_at01cr",
+            "proc_hist",
+            "xnumap_xdocum",
+            "xnumap_at04db",
+            "akd_xdoc_ct2_recno",
+            "doc_hist",
+            "doc_extra",
+            "chave_estruturada",
+        }
     )
     has_context = bool(reasons & {"competencia", "ent05_conta", "cc", "classe_valor"})
     return candidate.confidence == "muito_forte" and candidate.score >= 120 and has_anchor and has_context
@@ -923,6 +1005,22 @@ def score_candidate(akd_row: dict[str, str], ct2_row: dict[str, str]) -> Candida
         score += 70
         reasons.append("xdoc")
 
+    ct2_at01cr = clean(ct2_row.get("CT2_AT01CR", ""))
+    if akd_xdoc and ct2_at01cr and akd_xdoc == ct2_at01cr:
+        score += 68
+        reasons.append("xdoc_at01cr")
+
+    akd_proc_hist = process_hist_anchor_akd(akd_row)
+    ct2_proc_hist = process_hist_anchor_ct2(ct2_row)
+    if (
+        akd_proc_hist
+        and ct2_proc_hist
+        and akd_proc_hist == ct2_proc_hist
+        and clean(akd_row.get("AKD_DATA", "")) == derived_ct2_date(ct2_row)
+    ):
+        score += 74
+        reasons.append("proc_hist_data_valor_exato")
+
     akd_xnumap = clean(akd_row.get("AKD_XNUMAP", ""))
     ct2_xdocum = clean(ct2_row.get("CT2_XDOCUM", ""))
     if akd_xnumap and ct2_xdocum and akd_xnumap == ct2_xdocum:
@@ -958,6 +1056,16 @@ def score_candidate(akd_row: dict[str, str], ct2_row: dict[str, str]) -> Candida
         else:
             score += 28
             reasons.append(f"doc_extra_1:{strongest_doc}")
+
+    shared_history_docs = history_doc_keys_akd(akd_row) & history_doc_keys_ct2(ct2_row)
+    if shared_history_docs:
+        strongest_history_doc = max(shared_history_docs, key=len)
+        if len(shared_history_docs) >= 2:
+            score += 52
+            reasons.append(f"doc_hist_2:{strongest_history_doc}")
+        else:
+            score += 38
+            reasons.append(f"doc_hist_1:{strongest_history_doc}")
 
     akd_month = month_from_akd_date(akd_row.get("AKD_DATA", ""))
     ct2_month = month_from_ct2_row(ct2_row)
@@ -1010,9 +1118,10 @@ def score_candidate(akd_row: dict[str, str], ct2_row: dict[str, str]) -> Candida
 
     has_direct_doc_anchor = any(
         reason in reasons
-        for reason in {"xdoc", "xnumap_xdocum", "xnumap_at04db", "akd_xdoc_ct2_recno"}
+        for reason in {"xdoc", "xdoc_at01cr", "proc_hist_data_valor_exato", "xnumap_xdocum", "xnumap_at04db", "akd_xdoc_ct2_recno"}
     )
     has_doc_extra = has_reason_prefix(reasons, "doc_extra_")
+    has_doc_hist = has_reason_prefix(reasons, "doc_hist_")
     has_structured_key = has_reason_prefix(reasons, "chave_estruturada_")
 
     if has_doc_extra and not has_direct_doc_anchor:
@@ -1034,6 +1143,42 @@ def score_candidate(akd_row: dict[str, str], ct2_row: dict[str, str]) -> Candida
     if has_doc_extra and "classe_valor" in reasons:
         score += 12
         reasons.append("doc_extra_classe")
+
+    if has_doc_hist and not has_direct_doc_anchor:
+        score += 14
+        reasons.append("doc_hist_sem_ancora")
+
+    if has_doc_hist and "competencia" in reasons:
+        score += 18
+        reasons.append("doc_hist_competencia")
+
+    if has_doc_hist and "ent05_conta" in reasons:
+        score += 16
+        reasons.append("doc_hist_conta")
+
+    if has_doc_hist and clean(akd_row.get("AKD_DATA", "")) == derived_ct2_date(ct2_row):
+        score += 18
+        reasons.append("doc_hist_data_exata")
+
+    if has_doc_hist and "ent05_conta" in reasons and clean(akd_row.get("AKD_DATA", "")) == derived_ct2_date(ct2_row):
+        score += 24
+        reasons.append("doc_hist_data_conta")
+
+    if has_doc_hist and "ent05_conta" in reasons and "valor" in reasons:
+        score += 12
+        reasons.append("doc_hist_conta_valor")
+
+    if "proc_hist_data_valor_exato" in reasons and "competencia" in reasons:
+        score += 18
+        reasons.append("proc_hist_competencia")
+
+    if "proc_hist_data_valor_exato" in reasons and "ent05_conta" in reasons:
+        score += 18
+        reasons.append("proc_hist_conta")
+
+    if "proc_hist_data_valor_exato" in reasons:
+        score += 20
+        reasons.append("proc_hist_data_exata")
 
     if has_structured_key and not has_direct_doc_anchor:
         score += 8
@@ -1131,8 +1276,10 @@ def build_candidate_pairs(
     log_step("Montando indices auxiliares para candidatos")
     ct2_by_recno = {normalize_recno(row["R_E_C_N_O_"]): row for row in ct2_rows}
     ct2_by_xdoc = rows_by_key(ct2_rows, "CT2_XDOC")
+    ct2_by_at01cr = rows_by_key(ct2_rows, "CT2_AT01CR")
     ct2_by_xdocum = rows_by_key(ct2_rows, "CT2_XDOCUM")
     ct2_by_at04db = rows_by_key(ct2_rows, "CT2_AT04DB")
+    ct2_by_proc_hist_signature: dict[tuple[str, str, Decimal], list[dict[str, str]]] = defaultdict(list)
     ct2_by_month_value: dict[tuple[str, Decimal], list[dict[str, str]]] = defaultdict(list)
     ct2_by_year_value: dict[tuple[str, Decimal], list[dict[str, str]]] = defaultdict(list)
     ct2_by_quarter_value: dict[tuple[str, Decimal], list[dict[str, str]]] = defaultdict(list)
@@ -1140,8 +1287,11 @@ def build_candidate_pairs(
     ct2_by_cc_value: dict[tuple[str, Decimal], list[dict[str, str]]] = defaultdict(list)
     ct2_by_class_value: dict[tuple[str, Decimal], list[dict[str, str]]] = defaultdict(list)
     ct2_by_doc_key: dict[str, list[dict[str, str]]] = defaultdict(list)
+    ct2_by_history_doc: dict[str, list[dict[str, str]]] = defaultdict(list)
     ct2_by_key_token: dict[str, list[dict[str, str]]] = defaultdict(list)
     akd_key_token_freq: Counter[str] = Counter()
+    akd_history_doc_freq: Counter[str] = Counter()
+    ct2_history_doc_freq: Counter[str] = Counter()
 
     for row in ct2_rows:
         month = month_from_ct2_row(row)
@@ -1166,12 +1316,20 @@ def build_candidate_pairs(
                     ct2_by_class_value[(class_value, value)].append(row)
         for doc_key in row_doc_keys_ct2(row):
             ct2_by_doc_key[doc_key].append(row)
+        for history_doc in history_doc_keys_ct2(row):
+            ct2_history_doc_freq[history_doc] += 1
+            ct2_by_history_doc[history_doc].append(row)
         for key_token in extract_structured_key_tokens(row.get("CT2_KEY", "")):
             ct2_by_key_token[key_token].append(row)
+        proc_hist_signature = process_hist_anchor_signature_ct2(row)
+        if proc_hist_signature is not None:
+            ct2_by_proc_hist_signature[proc_hist_signature].append(row)
 
     for row in akd_rows:
         for key_token in extract_structured_key_tokens(row.get("AKD_CHAVE", "")):
             akd_key_token_freq[key_token] += 1
+        for history_doc in history_doc_keys_akd(row):
+            akd_history_doc_freq[history_doc] += 1
 
     candidates: list[CandidateMatch] = []
     seen_pairs: set[tuple[str, str]] = set()
@@ -1183,6 +1341,13 @@ def build_candidate_pairs(
         akd_xdoc = clean(akd_row.get("AKD_XDOC", ""))
         if akd_xdoc:
             for row in ct2_by_xdoc.get(akd_xdoc, []):
+                candidate_rows[clean(row["R_E_C_N_O_"])] = row
+            for row in ct2_by_at01cr.get(akd_xdoc, []):
+                candidate_rows[clean(row["R_E_C_N_O_"])] = row
+
+        akd_proc_hist_signature = process_hist_anchor_signature_akd(akd_row)
+        if akd_proc_hist_signature is not None:
+            for row in ct2_by_proc_hist_signature.get(akd_proc_hist_signature, []):
                 candidate_rows[clean(row["R_E_C_N_O_"])] = row
 
         akd_xnumap = clean(akd_row.get("AKD_XNUMAP", ""))
@@ -1211,6 +1376,18 @@ def build_candidate_pairs(
 
         for doc_key in row_doc_keys_akd(akd_row):
             for row in ct2_by_doc_key.get(doc_key, []):
+                candidate_rows[clean(row["R_E_C_N_O_"])] = row
+
+        for history_doc in history_doc_keys_akd(akd_row):
+            ct2_history_rows = ct2_by_history_doc.get(history_doc, [])
+            if not ct2_history_rows:
+                continue
+            if (
+                akd_history_doc_freq[history_doc] > HISTORY_DOC_MAX_FREQ_PER_SIDE
+                or ct2_history_doc_freq[history_doc] > HISTORY_DOC_MAX_FREQ_PER_SIDE
+            ):
+                continue
+            for row in ct2_history_rows:
                 candidate_rows[clean(row["R_E_C_N_O_"])] = row
 
         akd_month = month_from_akd_date(akd_row.get("AKD_DATA", ""))
@@ -1259,6 +1436,12 @@ def select_best_matches(candidates: list[CandidateMatch]) -> list[CandidateMatch
         candidates,
         key=lambda item: (
             item.score,
+            "proc_hist_data_exata" in item.reasons,
+            "proc_hist_conta" in item.reasons,
+            "doc_hist_data_conta" in item.reasons,
+            "doc_hist_competencia" in item.reasons,
+            "doc_hist_conta_valor" in item.reasons,
+            "xdoc_at01cr" in item.reasons,
             "xnumap_xdocum" in item.reasons,
             "xnumap_at04db" in item.reasons,
             "doc_extra_competencia" in item.reasons,
@@ -1318,6 +1501,7 @@ def export_row_matches(
                 "token_overlap",
                 "akd_xdoc",
                 "ct2_xdoc",
+                "ct2_at01cr",
                 "akd_xnumap",
                 "ct2_xdocum",
                 "ct2_at04db",
@@ -1353,8 +1537,10 @@ def export_row_matches(
                     item.token_overlap,
                     clean(akd_row.get("AKD_XDOC", "")),
                     clean(ct2_row.get("CT2_XDOC", "")),
+                    clean(ct2_row.get("CT2_AT01CR", "")),
                     clean(akd_row.get("AKD_XNUMAP", "")),
                     clean(ct2_row.get("CT2_XDOCUM", "")),
+                    clean(ct2_row.get("CT2_AT04DB", "")),
                     clean(akd_row.get("AKD_DATA", "")),
                     derived_ct2_date(ct2_row),
                     clean(ct2_row.get("CT2_HIST", "")),
@@ -1389,8 +1575,10 @@ def export_row_matches(
                 "ct2_valor",
                 "akd_xdoc",
                 "ct2_xdoc",
+                "ct2_at01cr",
                 "akd_xnumap",
                 "ct2_xdocum",
+                "ct2_at04db",
                 "akd_conta_referencia",
                 "ct2_debito",
                 "ct2_credito",
@@ -1418,6 +1606,7 @@ def export_row_matches(
                     f"{normalize_decimal(ct2_row.get('CT2_VALOR', '')) or Decimal('0.00'):.2f}",
                     clean(akd_row.get("AKD_XDOC", "")),
                     clean(ct2_row.get("CT2_XDOC", "")),
+                    clean(ct2_row.get("CT2_AT01CR", "")),
                     clean(akd_row.get("AKD_XNUMAP", "")),
                     clean(ct2_row.get("CT2_XDOCUM", "")),
                     clean(ct2_row.get("CT2_AT04DB", "")),
@@ -1561,6 +1750,7 @@ def export_row_matches(
                 "ct2_valor": f"{normalize_decimal(ct2_row.get('CT2_VALOR', '')) or Decimal('0.00'):.2f}",
                 "akd_xdoc": clean(akd_row.get("AKD_XDOC", "")),
                 "ct2_xdoc": clean(ct2_row.get("CT2_XDOC", "")),
+                "ct2_at01cr": clean(ct2_row.get("CT2_AT01CR", "")),
                 "akd_xnumap": clean(akd_row.get("AKD_XNUMAP", "")),
                 "ct2_xdocum": clean(ct2_row.get("CT2_XDOCUM", "")),
                 "ct2_at04db": clean(ct2_row.get("CT2_AT04DB", "")),
@@ -1646,6 +1836,7 @@ def export_row_matches(
                 "ct2_quarter": quarter_from_date(row.get("CT2_DATA", "")),
                 "ct2_valor": f"{normalize_decimal(row.get('CT2_VALOR', '')) or Decimal('0.00'):.2f}",
                 "ct2_xdoc": clean(row.get("CT2_XDOC", "")),
+                "ct2_at01cr": clean(row.get("CT2_AT01CR", "")),
                 "ct2_xdocum": clean(row.get("CT2_XDOCUM", "")),
                 "ct2_at04db": clean(row.get("CT2_AT04DB", "")),
                 "ct2_debito": clean(row.get("CT2_DEBITO", "")),
@@ -1674,6 +1865,7 @@ def export_row_matches(
         "Valor CT2": "Valor do lancamento na base CT2.",
         "DOC AKD": "Documento chave da AKD usado como uma das ancoras principais do cruzamento.",
         "DOC CT2": "Documento chave da CT2 usado como uma das ancoras principais do cruzamento.",
+        "AT01CR CT2": "Campo CT2_AT01CR da CT2 usado como ancora adicional para comparar com o documento da AKD.",
         "AP AKD": "Numero AP da AKD, usado como segunda ancora importante de conciliacao.",
         "Doc APEX CT2": "Documento APEX da CT2 comparado com o numero AP da AKD.",
         "AT04DB CT2": "Campo CT2_AT04DB da CT2 usado como ancora adicional para comparar com o AP da AKD.",
@@ -1721,6 +1913,7 @@ def export_row_matches(
         "Valor CT2": {"field": "ct2_valor", "type": "number"},
         "DOC AKD": {"field": "akd_xdoc", "type": "string"},
         "DOC CT2": {"field": "ct2_xdoc", "type": "string"},
+        "AT01CR CT2": {"field": "ct2_at01cr", "type": "string"},
         "AP AKD": {"field": "akd_xnumap", "type": "string"},
         "Doc APEX CT2": {"field": "ct2_xdocum", "type": "string"},
         "AT04DB CT2": {"field": "ct2_at04db", "type": "string"},
@@ -2780,6 +2973,7 @@ def export_row_matches(
             {{ title: "Valor CT2", field: "ct2_valor", className: "mono" }},
             {{ title: "DOC AKD", field: "akd_xdoc", className: "mono" }},
             {{ title: "DOC CT2", field: "ct2_xdoc", className: "mono" }},
+            {{ title: "AT01CR CT2", field: "ct2_at01cr", className: "mono" }},
             {{ title: "AP AKD", field: "akd_xnumap", className: "mono" }},
             {{ title: "Doc APEX CT2", field: "ct2_xdocum", className: "mono" }},
             {{ title: "AT04DB CT2", field: "ct2_at04db", className: "mono" }},
@@ -2840,6 +3034,7 @@ def export_row_matches(
             {{ title: "Trimestre CT2", field: "ct2_quarter", className: "mono" }},
             {{ title: "Valor CT2", field: "ct2_valor", className: "mono" }},
             {{ title: "DOC CT2", field: "ct2_xdoc", className: "mono" }},
+            {{ title: "AT01CR CT2", field: "ct2_at01cr", className: "mono" }},
             {{ title: "Doc APEX CT2", field: "ct2_xdocum", className: "mono" }},
             {{ title: "AT04DB CT2", field: "ct2_at04db", className: "mono" }},
             {{ title: "Debito CT2", field: "ct2_debito", className: "mono" }},
@@ -2873,6 +3068,7 @@ def export_row_matches(
           "ct2_valor",
           "akd_xdoc",
           "ct2_xdoc",
+          "ct2_at01cr",
           "akd_xnumap",
           "ct2_xdocum",
           "ct2_at04db",
@@ -2905,6 +3101,7 @@ def export_row_matches(
           "ct2_data",
           "ct2_valor",
           "ct2_xdoc",
+          "ct2_at01cr",
           "ct2_xdocum",
           "ct2_at04db",
           "ct2_debito",
@@ -3723,6 +3920,13 @@ def build_summary(
         ct2_key="CT2_XDOC",
         output_name="overlap_xdoc.csv",
     )
+    xdoc_at01cr_summaries = summarize_overlap(
+        akd_rows=akd_rows,
+        ct2_rows=ct2_rows,
+        akd_key="AKD_XDOC",
+        ct2_key="CT2_AT01CR",
+        output_name="overlap_xdoc_at01cr.csv",
+    )
     xnumap_summaries = summarize_overlap(
         akd_rows=akd_rows,
         ct2_rows=ct2_rows,
@@ -3733,6 +3937,7 @@ def build_summary(
 
     row_level = export_row_matches(akd_rows, ct2_rows)
     xdoc_status = Counter(item.status for item in xdoc_summaries)
+    xdoc_at01cr_status = Counter(item.status for item in xdoc_at01cr_summaries)
     xnumap_status = Counter(item.status for item in xnumap_summaries)
 
     return {
@@ -3749,6 +3954,10 @@ def build_summary(
                 "keys_em_comum": len(xdoc_summaries),
                 "status": dict(xdoc_status),
             },
+            "akd_xdoc__ct2_at01cr": {
+                "keys_em_comum": len(xdoc_at01cr_summaries),
+                "status": dict(xdoc_at01cr_status),
+            },
             "akd_xnumap__ct2_xdocum": {
                 "keys_em_comum": len(xnumap_summaries),
                 "status": dict(xnumap_status),
@@ -3758,6 +3967,7 @@ def build_summary(
         "reconciliacao_linha_a_linha": row_level,
         "recomendacao": [
             "Priorizar match por AKD_XDOC = CT2_XDOC.",
+            "Usar AKD_XDOC = CT2_AT01CR como ancora documental complementar.",
             "Usar AKD_XNUMAP = CT2_XDOCUM como segunda camada.",
             "Usar competencia + valor como bloco residual para limitar candidatos.",
             "Reforcar score com similaridade de texto e com coincidencia de conta em AKD_ENT05.",
