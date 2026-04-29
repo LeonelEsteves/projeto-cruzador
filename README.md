@@ -172,6 +172,7 @@ O arquivo `saida/relatorio_conciliacao.html` possui:
 - aba `CT2 sem match`
 - aba `ORCxCTB` com consolidado AKD x CT2 por conta de referencia, coluna `Origem` e contas presentes apenas de um lado
 - filtro `Status contas` na aba `ORCxCTB` para separar contas `ok` de contas `divergente`
+- opcao para recolher ou expandir a secao de filtros no topo do relatorio
 - filtros, busca livre e ordenacao
 - redimensionamento de colunas
 - expansao das colunas de historico

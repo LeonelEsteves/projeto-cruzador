@@ -2229,16 +2229,48 @@ def export_row_matches(
     .version-pill a:hover {{
       text-decoration: underline;
     }}
-      .filters {{
+    .filters {{
         background: var(--panel);
         border: 1px solid var(--line);
       border-radius: 20px;
       padding: 18px;
       box-shadow: var(--shadow);
+    }}
+    .filters-header {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 14px;
+    }}
+    .filters-title {{
+      font-size: 13px;
+      font-weight: 800;
+      color: var(--ink);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }}
+    .filters-toggle {{
+      border: 1px solid var(--line);
+      background: #fffaf2;
+      color: var(--ink);
+      border-radius: 999px;
+      padding: 9px 12px;
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
+    }}
+    .filters-body {{
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
       gap: 14px;
       align-items: end;
+    }}
+    .filters.collapsed .filters-body {{
+      display: none;
+    }}
+    .filters.collapsed {{
+      padding-bottom: 14px;
     }}
     .field {{
       display: flex;
@@ -2942,7 +2974,12 @@ def export_row_matches(
       </div>
     </section>
 
-      <section class="filters">
+      <section class="filters" id="filtersCard">
+      <div class="filters-header">
+        <div class="filters-title">Filtros</div>
+        <button class="filters-toggle" id="filtersToggleBtn" type="button">Recolher filtros</button>
+      </div>
+      <div class="filters-body">
       <div class="field">
         <label for="confidence" data-title="Confianca">Confianca</label>
         <select id="confidence">
@@ -3025,6 +3062,7 @@ def export_row_matches(
         <label data-title="Limpar filtros">Limpar filtros</label>
         <button class="btn" id="resetBtn" type="button">Limpar filtros</button>
       </div>
+      </div>
     </section>
 
       <section class="table-wrap">
@@ -3104,6 +3142,8 @@ def export_row_matches(
       const versionRepoEl = document.getElementById("versionRepo");
       const rowsEl = document.getElementById("rows");
       const dashboardPanelEl = document.getElementById("dashboardPanel");
+      const filtersCardEl = document.getElementById("filtersCard");
+      const filtersToggleBtnEl = document.getElementById("filtersToggleBtn");
       const columnToolsEl = document.getElementById("columnTools");
       const columnToggleBtnEl = document.getElementById("columnToggleBtn");
       const columnPanelEl = document.getElementById("columnPanel");
@@ -3175,6 +3215,7 @@ def export_row_matches(
         versionRepoEl.textContent = "sem repositorio";
       }}
     }}
+      let filtersCollapsed = false;
       let sortState = {{ field: "", direction: "" }};
       const expandedHistory = new Set();
       const selectedColumnsByTab = {{}};
@@ -3531,6 +3572,12 @@ def export_row_matches(
           <span class="help-pop">${{escapeHtml(help)}}</span>
         </span>
       `;
+    }}
+
+    function syncFiltersToggle() {{
+      if (!filtersCardEl || !filtersToggleBtnEl) return;
+      filtersCardEl.classList.toggle("collapsed", filtersCollapsed);
+      filtersToggleBtnEl.textContent = filtersCollapsed ? "Expandir filtros" : "Recolher filtros";
     }}
 
       function syncHorizontalScroll() {{
@@ -4041,6 +4088,13 @@ def export_row_matches(
         }});
       }});
 
+    if (filtersToggleBtnEl) {{
+      filtersToggleBtnEl.addEventListener("click", () => {{
+        filtersCollapsed = !filtersCollapsed;
+        syncFiltersToggle();
+      }});
+    }}
+
     resetBtn.addEventListener("click", () => {{
       searchEl.value = "";
       confidenceEl.value = "";
@@ -4192,6 +4246,7 @@ def export_row_matches(
     window.addEventListener("resize", syncHorizontalScroll);
 
     renderVersionInfo();
+    syncFiltersToggle();
     render();
   </script>
 </body>
