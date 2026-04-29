@@ -27,6 +27,7 @@ AKD_ALLOWED_TPSALD = {"LQ", "PG", "AR", "RB"}
 KEY_TOKEN_MAX_FREQ_PER_SIDE = 40
 HISTORY_DOC_MAX_FREQ_PER_SIDE = 20
 PROCESS_HIST_EXACT_ANCHOR_CODES = {"900013", "900025"}
+PROCESS_RI_ANCHOR_CODES = {"900027"}
 
 
 class ProgressBar:
@@ -502,6 +503,35 @@ def process_hist_anchor_signature_ct2(
     return hist, date, value
 
 
+def extract_ri_10_digits(value: object) -> str:
+    match = re.search(r"\bRI\s*:\s*(\d{10})\b", normalize_text(value))
+    return match.group(1) if match else ""
+
+
+def process_ri_anchor_signature_akd(
+    row: dict[str, str],
+) -> tuple[str, str, Decimal] | None:
+    if clean(row.get("AKD_PROCES", "")) not in PROCESS_RI_ANCHOR_CODES:
+        return None
+    token = extract_ri_10_digits(row.get("AKD_HIST", ""))
+    date = clean(row.get("AKD_DATA", ""))
+    value = normalize_decimal(row.get("AKD_VALOR1", ""))
+    if not token or not date or value is None:
+        return None
+    return token, date, value
+
+
+def process_ri_anchor_signature_ct2(
+    row: dict[str, str],
+) -> tuple[str, str, Decimal] | None:
+    token = extract_ri_10_digits(row.get("CT2_HIST", ""))
+    date = derived_ct2_date(row)
+    value = normalize_decimal(row.get("CT2_VALOR", ""))
+    if not token or not date or value is None:
+        return None
+    return token, date, value
+
+
 def extract_doc_keys(value: object) -> set[str]:
     text = normalize_text(value)
     if not text:
@@ -738,6 +768,113 @@ def build_generic_tab_rows(
     return normalized_rows, columns
 
 
+def build_budget_account_summary_rows(
+    akd_rows: list[dict[str, str]],
+    ct2_rows: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    summary: dict[str, dict[str, Decimal | str]] = {}
+    allowed_prefixes = ("1", "3", "4")
+
+    def account_in_scope(account: str) -> bool:
+        return bool(account) and account.startswith(allowed_prefixes)
+
+    def ensure(account: str) -> dict[str, Decimal | str]:
+        item = summary.get(account)
+        if item is None:
+            item = {
+                "account": account,
+                "akd_tipo_1": Decimal("0.00"),
+                "akd_tipo_2": Decimal("0.00"),
+                "ct2_debito": Decimal("0.00"),
+                "ct2_credito": Decimal("0.00"),
+                "has_akd": "nao",
+                "has_ct2": "nao",
+            }
+            summary[account] = item
+        return item
+
+    for row in akd_rows:
+        account = clean(row.get("AKD_ENT05", ""))
+        value = normalize_decimal(row.get("AKD_VALOR1", ""))
+        if clean(row.get("AKD_STATUS", "")) != "1":
+            continue
+        if clean(row.get("AKD_TPSALD", "")).upper() not in AKD_ALLOWED_TPSALD:
+            continue
+        if not account_in_scope(account) or value is None:
+            continue
+        item = ensure(account)
+        item["has_akd"] = "sim"
+        if clean(row.get("AKD_TIPO", "")) == "2":
+            item["akd_tipo_2"] = Decimal(item["akd_tipo_2"]) + value
+        else:
+            item["akd_tipo_1"] = Decimal(item["akd_tipo_1"]) + value
+
+    for row in ct2_rows:
+        value = normalize_decimal(row.get("CT2_VALOR", ""))
+        if value is None:
+            continue
+        if clean(row.get("CT2_MOEDLC", "")) != "01":
+            continue
+        if clean(row.get("CT2_TPSALD", "")) != "1":
+            continue
+        debito = clean(row.get("CT2_DEBITO", ""))
+        credito = clean(row.get("CT2_CREDIT", ""))
+        if account_in_scope(debito):
+            item = ensure(debito)
+            item["has_ct2"] = "sim"
+            item["ct2_debito"] = Decimal(item["ct2_debito"]) + value
+        if account_in_scope(credito):
+            item = ensure(credito)
+            item["has_ct2"] = "sim"
+            item["ct2_credito"] = Decimal(item["ct2_credito"]) + value
+
+    rows: list[dict[str, str]] = []
+    for account in sorted(summary):
+        item = summary[account]
+        akd_tipo_1 = Decimal(item["akd_tipo_1"])
+        akd_tipo_2 = Decimal(item["akd_tipo_2"])
+        ct2_debito = Decimal(item["ct2_debito"])
+        ct2_credito = Decimal(item["ct2_credito"])
+        akd_saldo = akd_tipo_1 - akd_tipo_2
+        ct2_partida_dobrada = ct2_debito - ct2_credito
+        diff_debito = akd_tipo_1 - ct2_debito
+        diff_credito = akd_tipo_2 - ct2_credito
+        diff_saldo = akd_saldo - ct2_partida_dobrada
+        has_akd = item["has_akd"] == "sim"
+        has_ct2 = item["has_ct2"] == "sim"
+        if has_akd and has_ct2:
+            origem = "ambos"
+        elif has_akd:
+            origem = "somente_akd"
+        else:
+            origem = "somente_ct2"
+        rows.append(
+            {
+                "conta_orcamentaria": account,
+                "origem": origem,
+                "akd_debito": f"{akd_tipo_1:.2f}",
+                "akd_credito": f"{akd_tipo_2:.2f}",
+                "akd_saldo": f"{akd_saldo:.2f}",
+                "ct2_debito": f"{ct2_debito:.2f}",
+                "ct2_credito": f"{ct2_credito:.2f}",
+                "ct2_partida_dobrada": f"{ct2_partida_dobrada:.2f}",
+                "diff_akd_debito_ct2_debito": f"{diff_debito:.2f}",
+                "diff_akd_credito_ct2_credito": f"{diff_credito:.2f}",
+                "diff_saldo_partida_dobrada": f"{diff_saldo:.2f}",
+                "diff_total_akd_ct2": f"{diff_saldo:.2f}",
+                "status_debito": "ok" if diff_debito == 0 else "divergente",
+                "status_credito": "ok" if diff_credito == 0 else "divergente",
+                "status_saldo": "ok" if diff_saldo == 0 else "divergente",
+                "status_conta": (
+                    "ok"
+                    if diff_debito == 0 and diff_credito == 0 and diff_saldo == 0
+                    else "divergente"
+                ),
+            }
+        )
+    return rows
+
+
 @dataclass
 class GroupSummary:
     key: str
@@ -790,6 +927,8 @@ def normalized_reason_set(reasons: str) -> set[str]:
             continue
         if base.startswith("chave_estruturada_"):
             normalized.add("chave_estruturada")
+        elif base.startswith("proc_ri_"):
+            normalized.add("proc_ri")
         elif base.startswith("proc_hist_"):
             normalized.add("proc_hist")
         elif base.startswith("doc_hist_"):
@@ -810,6 +949,7 @@ def build_group_signature(candidate: CandidateMatch) -> str:
     ordered = [
         "xdoc",
         "xdoc_at01cr",
+        "proc_ri",
         "proc_hist",
         "xnumap_xdocum",
         "xnumap_at04db",
@@ -834,6 +974,7 @@ def candidate_supports_group(candidate: CandidateMatch) -> bool:
         & {
             "xdoc",
             "xdoc_at01cr",
+            "proc_ri",
             "proc_hist",
             "xnumap_xdocum",
             "xnumap_at04db",
@@ -1021,6 +1162,16 @@ def score_candidate(akd_row: dict[str, str], ct2_row: dict[str, str]) -> Candida
         score += 74
         reasons.append("proc_hist_data_valor_exato")
 
+    akd_ri_signature = process_ri_anchor_signature_akd(akd_row)
+    ct2_ri_signature = process_ri_anchor_signature_ct2(ct2_row)
+    if (
+        akd_ri_signature is not None
+        and ct2_ri_signature is not None
+        and akd_ri_signature == ct2_ri_signature
+    ):
+        score += 72
+        reasons.append("proc_ri_data_valor_exato")
+
     akd_xnumap = clean(akd_row.get("AKD_XNUMAP", ""))
     ct2_xdocum = clean(ct2_row.get("CT2_XDOCUM", ""))
     if akd_xnumap and ct2_xdocum and akd_xnumap == ct2_xdocum:
@@ -1118,7 +1269,7 @@ def score_candidate(akd_row: dict[str, str], ct2_row: dict[str, str]) -> Candida
 
     has_direct_doc_anchor = any(
         reason in reasons
-        for reason in {"xdoc", "xdoc_at01cr", "proc_hist_data_valor_exato", "xnumap_xdocum", "xnumap_at04db", "akd_xdoc_ct2_recno"}
+        for reason in {"xdoc", "xdoc_at01cr", "proc_ri_data_valor_exato", "proc_hist_data_valor_exato", "xnumap_xdocum", "xnumap_at04db", "akd_xdoc_ct2_recno"}
     )
     has_doc_extra = has_reason_prefix(reasons, "doc_extra_")
     has_doc_hist = has_reason_prefix(reasons, "doc_hist_")
@@ -1179,6 +1330,14 @@ def score_candidate(akd_row: dict[str, str], ct2_row: dict[str, str]) -> Candida
     if "proc_hist_data_valor_exato" in reasons:
         score += 20
         reasons.append("proc_hist_data_exata")
+
+    if "proc_ri_data_valor_exato" in reasons and "competencia" in reasons:
+        score += 16
+        reasons.append("proc_ri_competencia")
+
+    if "proc_ri_data_valor_exato" in reasons and "ent05_conta" in reasons:
+        score += 14
+        reasons.append("proc_ri_conta")
 
     if has_structured_key and not has_direct_doc_anchor:
         score += 8
@@ -1279,6 +1438,7 @@ def build_candidate_pairs(
     ct2_by_at01cr = rows_by_key(ct2_rows, "CT2_AT01CR")
     ct2_by_xdocum = rows_by_key(ct2_rows, "CT2_XDOCUM")
     ct2_by_at04db = rows_by_key(ct2_rows, "CT2_AT04DB")
+    ct2_by_proc_ri_signature: dict[tuple[str, str, Decimal], list[dict[str, str]]] = defaultdict(list)
     ct2_by_proc_hist_signature: dict[tuple[str, str, Decimal], list[dict[str, str]]] = defaultdict(list)
     ct2_by_month_value: dict[tuple[str, Decimal], list[dict[str, str]]] = defaultdict(list)
     ct2_by_year_value: dict[tuple[str, Decimal], list[dict[str, str]]] = defaultdict(list)
@@ -1324,6 +1484,9 @@ def build_candidate_pairs(
         proc_hist_signature = process_hist_anchor_signature_ct2(row)
         if proc_hist_signature is not None:
             ct2_by_proc_hist_signature[proc_hist_signature].append(row)
+        proc_ri_signature = process_ri_anchor_signature_ct2(row)
+        if proc_ri_signature is not None:
+            ct2_by_proc_ri_signature[proc_ri_signature].append(row)
 
     for row in akd_rows:
         for key_token in extract_structured_key_tokens(row.get("AKD_CHAVE", "")):
@@ -1348,6 +1511,11 @@ def build_candidate_pairs(
         akd_proc_hist_signature = process_hist_anchor_signature_akd(akd_row)
         if akd_proc_hist_signature is not None:
             for row in ct2_by_proc_hist_signature.get(akd_proc_hist_signature, []):
+                candidate_rows[clean(row["R_E_C_N_O_"])] = row
+
+        akd_proc_ri_signature = process_ri_anchor_signature_akd(akd_row)
+        if akd_proc_ri_signature is not None:
+            for row in ct2_by_proc_ri_signature.get(akd_proc_ri_signature, []):
                 candidate_rows[clean(row["R_E_C_N_O_"])] = row
 
         akd_xnumap = clean(akd_row.get("AKD_XNUMAP", ""))
@@ -1436,6 +1604,8 @@ def select_best_matches(candidates: list[CandidateMatch]) -> list[CandidateMatch
         candidates,
         key=lambda item: (
             item.score,
+            "proc_ri_conta" in item.reasons,
+            "proc_ri_competencia" in item.reasons,
             "proc_hist_data_exata" in item.reasons,
             "proc_hist_conta" in item.reasons,
             "doc_hist_data_conta" in item.reasons,
@@ -1473,6 +1643,8 @@ def select_best_matches(candidates: list[CandidateMatch]) -> list[CandidateMatch
 def export_row_matches(
     akd_rows: list[dict[str, str]],
     ct2_rows: list[dict[str, str]],
+    akd_rows_raw: list[dict[str, str]] | None = None,
+    ct2_rows_raw: list[dict[str, str]] | None = None,
 ) -> dict[str, object]:
     log_step("Gerando reconciliacao linha a linha")
     akd_map = {normalize_recno(row["R_E_C_N_O_"]): row for row in akd_rows}
@@ -1793,6 +1965,10 @@ def export_row_matches(
             "CT1_DESC01": "Descricao",
         },
     )
+    budget_account_summary_rows = build_budget_account_summary_rows(
+        akd_rows_raw or akd_rows,
+        ct2_rows_raw or ct2_rows,
+    )
 
     report_data = {
         "summary": {
@@ -1812,6 +1988,7 @@ def export_row_matches(
         "ct2_columns": ct2_pure_columns,
         "glossary_rows": glossary_tab_rows,
         "glossary_columns": glossary_tab_columns,
+        "budget_account_summary_rows": budget_account_summary_rows,
         "akd_unmatched_rows": [
             {
                 "akd_lote": clean(row.get("AKD_LOTE", "")),
@@ -1878,6 +2055,17 @@ def export_row_matches(
         "Historico CT2": "Texto do historico da CT2 usado para comparacao semantica.",
         "RECNO AKD": "Identificador unico do registro na base AKD.",
         "RECNO CT2": "Identificador unico do registro na base CT2.",
+        "Conta": "Conta consolidada para comparar saldos de AKD e CT2.",
+        "Origem": "Indica se a conta aparece nos dois lados ou somente na AKD ou na CT2 dentro do recorte filtrado desta aba.",
+        "AKD Debito": "Somatoria da AKD para a conta, assumindo AKD_TIPO = 1 como debito.",
+        "AKD Credito": "Somatoria da AKD para a conta, assumindo AKD_TIPO = 2 como credito.",
+        "AKD Saldo": "Saldo da AKD calculado como debito menos credito usando AKD_STATUS = 1, AKD_TPSALD em LQ/PG/AR/RB e AKD_ENT05 iniciado por 1, 3 ou 4.",
+        "CT2 Debito": "Somatoria da CT2 quando a conta aparece no debito, considerando CT2_MOEDLC = 01, CT2_TPSALD = 1 e conta iniciada por 1, 3 ou 4.",
+        "CT2 Credito": "Somatoria da CT2 quando a conta aparece no credito, considerando CT2_MOEDLC = 01, CT2_TPSALD = 1 e conta iniciada por 1, 3 ou 4.",
+        "CT2 P.Dobrada": "Saldo da CT2 calculado como debito menos credito por conta dentro do recorte filtrado desta aba.",
+        "Diff Debito": "Diferenca entre AKD Debito e CT2 Debito.",
+        "Diff Credito": "Diferenca entre AKD Credito e CT2 Credito.",
+        "Diff Saldo": "Diferenca entre AKD Saldo e CT2 P.Dobrada.",
     }
 
     filter_help = {
@@ -1891,6 +2079,7 @@ def export_row_matches(
         "Data divergente": "Compara a data do lancamento da AKD com a data real do lancamento da CT2.",
         "Valor divergente": "Mostra se o valor entre AKD e CT2 bate, diverge ou nao possui referencia suficiente.",
         "Conta divergente": "Mostra se a conta de referencia da AKD bate com debito/credito da CT2, diverge ou esta sem referencia.",
+        "Status contas": "Na aba ORCxCTB, filtra as contas consolidadas entre contas totalmente alinhadas e contas com qualquer divergencia.",
         "Limpar filtros": "Remove todos os filtros aplicados e volta a exibir todos os registros do relatorio.",
     }
 
@@ -1926,6 +2115,30 @@ def export_row_matches(
         "Historico CT2": {"field": "ct2_historico", "type": "string"},
         "RECNO AKD": {"field": "recno_akd", "type": "number"},
         "RECNO CT2": {"field": "recno_ct2", "type": "number"},
+        "Origem": {"field": "origem", "type": "string"},
+        "Conta": {"field": "conta_orcamentaria", "type": "string"},
+        "AKD Debito": {"field": "akd_debito", "type": "number"},
+        "AKD Credito": {"field": "akd_credito", "type": "number"},
+        "AKD Saldo": {"field": "akd_saldo", "type": "number"},
+        "CT2 Debito": {"field": "ct2_debito", "type": "number"},
+        "CT2 Credito": {"field": "ct2_credito", "type": "number"},
+        "CT2 P.Dobrada": {"field": "ct2_partida_dobrada", "type": "number"},
+        "Diff Debito": {"field": "diff_akd_debito_ct2_debito", "type": "number"},
+        "Diff Credito": {"field": "diff_akd_credito_ct2_credito", "type": "number"},
+        "Diff Saldo": {"field": "diff_saldo_partida_dobrada", "type": "number"},
+        "Status Debito": {"field": "status_debito", "type": "string"},
+        "Status Credito": {"field": "status_credito", "type": "string"},
+        "Status Saldo": {"field": "status_saldo", "type": "string"},
+        "Conta": {"field": "conta_orcamentaria", "type": "string"},
+        "AKD Debito": {"field": "akd_debito", "type": "number"},
+        "AKD Credito": {"field": "akd_credito", "type": "number"},
+        "AKD Saldo": {"field": "akd_saldo", "type": "number"},
+        "CT2 Debito": {"field": "ct2_debito", "type": "number"},
+        "CT2 Credito": {"field": "ct2_credito", "type": "number"},
+        "CT2 P.Dobrada": {"field": "ct2_partida_dobrada", "type": "number"},
+        "Diff Debito": {"field": "diff_akd_debito_ct2_debito", "type": "number"},
+        "Diff Credito": {"field": "diff_akd_credito_ct2_credito", "type": "number"},
+        "Diff Saldo": {"field": "diff_saldo_partida_dobrada", "type": "number"},
     }
 
     report_html = f"""<!DOCTYPE html>
@@ -1964,7 +2177,7 @@ def export_row_matches(
         linear-gradient(180deg, #f8f3ea 0%, var(--bg) 100%);
     }}
     .wrap {{
-      max-width: 1600px;
+      max-width: 1960px;
       margin: 0 auto;
       padding: 28px;
     }}
@@ -1973,6 +2186,7 @@ def export_row_matches(
       color: white;
       border-radius: 24px;
       padding: 28px;
+      margin-bottom: 18px;
       box-shadow: var(--shadow);
     }}
     .hero h1 {{
@@ -2446,9 +2660,9 @@ def export_row_matches(
       width: max-content;
       min-width: 100%;
       border-collapse: collapse;
-      min-width: 1700px;
+      min-width: max-content;
       font-size: 13px;
-      table-layout: fixed;
+      table-layout: auto;
     }}
     th, td {{
       border-bottom: 1px solid #efe6da;
@@ -2521,6 +2735,11 @@ def export_row_matches(
     .confidence-muito_forte {{ background: var(--good-bg); color: var(--good); }}
     .confidence-forte {{ background: var(--mid-bg); color: var(--mid); }}
     .confidence-provavel {{ background: var(--warn-bg); color: var(--warn); }}
+    .status-ok {{ background: #eaf7ef; color: #2f6f44; }}
+    .status-divergente {{ background: #fdeeee; color: #b54747; }}
+    .status-sem_referencia {{ background: #f6efe3; color: #9a6b2f; }}
+    tr.row-status-ok td {{ background: #f3fbf6; }}
+    tr.row-status-divergente td {{ background: #fff5f5; }}
     .mono {{ font-family: var(--mono); }}
     .muted {{ color: var(--muted); }}
     td.copyable-cell {{
@@ -2795,6 +3014,14 @@ def export_row_matches(
         </select>
       </div>
       <div class="field">
+        <label for="budgetStatusFilter" data-title="Status contas">Status contas</label>
+        <select id="budgetStatusFilter">
+          <option value="">Todas</option>
+          <option value="ok">Contas ok</option>
+          <option value="divergente">Contas divergentes</option>
+        </select>
+      </div>
+      <div class="field">
         <label data-title="Limpar filtros">Limpar filtros</label>
         <button class="btn" id="resetBtn" type="button">Limpar filtros</button>
       </div>
@@ -2807,6 +3034,7 @@ def export_row_matches(
           <button class="tab-btn active" data-tab="matches">Matches</button>
           <button class="tab-btn" data-tab="akd_unmatched">AKD sem match</button>
           <button class="tab-btn" data-tab="ct2_unmatched">CT2 sem match</button>
+          <button class="tab-btn" data-tab="budget_account_summary">ORCxCTB</button>
           <button class="tab-btn" data-tab="akd_all">AKD pura</button>
           <button class="tab-btn" data-tab="ct2_all">CT2 pura</button>
         </div>
@@ -2816,19 +3044,16 @@ def export_row_matches(
             <div class="pager">
               <button class="pager-btn" id="prevPageBtn" type="button">Linha anterior</button>
               <button class="pager-btn" id="nextPageBtn" type="button">Proxima linha</button>
-              <input id="search" class="table-search" type="text" placeholder="Busca livre em qualquer coluna do relatorio">
-            </div>
-          </div>
-          <div class="meta-actions center">
-            <div class="pager">
               <select class="pager-select" id="pageSize">
                 <option value="50">50 linhas</option>
                 <option value="100" selected>100 linhas</option>
                 <option value="200">200 linhas</option>
                 <option value="500">500 linhas</option>
               </select>
+              <input id="search" class="table-search" type="text" placeholder="Busca livre em qualquer coluna do relatorio">
             </div>
           </div>
+          <div class="meta-actions center"></div>
           <div class="meta-actions end">
             <div class="column-tools" id="columnTools">
               <button class="column-toggle-btn" id="columnToggleBtn" type="button">Colunas visiveis</button>
@@ -2836,8 +3061,6 @@ def export_row_matches(
             </div>
           </div>
         </div>
-      <div class="scroll-hint">Use a barra horizontal para navegar pelas colunas da direita.</div>
-        <div class="resize-hint">Arraste a borda pontilhada no lado direito da coluna para ajustar a largura ou de duplo clique para autoajustar como no Excel.</div>
       <div class="top-scroll" id="topScroll">
         <div class="top-scroll-inner" id="topScrollInner"></div>
       </div>
@@ -2897,6 +3120,7 @@ def export_row_matches(
     const dateStatusFilterEl = document.getElementById("dateStatusFilter");
     const valueStatusFilterEl = document.getElementById("valueStatusFilter");
     const accountStatusFilterEl = document.getElementById("accountStatusFilter");
+    const budgetStatusFilterEl = document.getElementById("budgetStatusFilter");
     const resetBtn = document.getElementById("resetBtn");
       const topScrollEl = document.getElementById("topScroll");
       const topScrollInnerEl = document.getElementById("topScrollInner");
@@ -2914,7 +3138,7 @@ def export_row_matches(
       return acc;
     }}, {{}});
     const confidenceRank = {{ muito_forte: 3, forte: 2, provavel: 1 }};
-    const managedTabs = new Set(["matches", "akd_all", "ct2_all", "glossary", "akd_unmatched", "ct2_unmatched"]);
+    const managedTabs = new Set(["matches", "akd_all", "ct2_all", "glossary", "akd_unmatched", "ct2_unmatched", "budget_account_summary"]);
     const preferredWidths = {{
       "Confianca": 130,
       "Score": 90,
@@ -3045,6 +3269,26 @@ def export_row_matches(
             {{ title: "RECNO CT2", field: "recno_ct2", className: "mono" }},
           ],
         }},
+        budget_account_summary: {{
+          label: "consolidado ORC x CTB",
+          rows: report.budget_account_summary_rows,
+          columns: [
+            {{ title: "Conta", field: "conta_orcamentaria", className: "mono" }},
+            {{ title: "Origem", field: "origem", className: "mono" }},
+            {{ title: "AKD Debito", field: "akd_debito", className: "mono" }},
+            {{ title: "AKD Credito", field: "akd_credito", className: "mono" }},
+            {{ title: "AKD Saldo", field: "akd_saldo", className: "mono" }},
+            {{ title: "CT2 Debito", field: "ct2_debito", className: "mono" }},
+            {{ title: "CT2 Credito", field: "ct2_credito", className: "mono" }},
+            {{ title: "CT2 P.Dobrada", field: "ct2_partida_dobrada", className: "mono" }},
+            {{ title: "Diff Debito", field: "diff_akd_debito_ct2_debito", className: "mono" }},
+            {{ title: "Diff Credito", field: "diff_akd_credito_ct2_credito", className: "mono" }},
+            {{ title: "Diff Saldo", field: "diff_saldo_partida_dobrada", className: "mono" }},
+            {{ title: "Status Debito", field: "status_debito", className: "mono" }},
+            {{ title: "Status Credito", field: "status_credito", className: "mono" }},
+            {{ title: "Status Saldo", field: "status_saldo", className: "mono" }},
+          ],
+        }},
       }};
 
       yearFilterEl.innerHTML = `<option value="">Todos</option>` + report.years.map(year => `<option value="${{escapeHtml(year)}}">${{escapeHtml(year)}}</option>`).join("");
@@ -3110,6 +3354,25 @@ def export_row_matches(
           "ct2_centro_credito",
           "ct2_historico",
           "recno_ct2",
+        ].filter(field => columns.some(col => col.field === field));
+      }}
+      if (tab === "budget_account_summary") {{
+        return [
+          "conta_orcamentaria",
+          "origem",
+          "akd_debito",
+          "akd_credito",
+          "akd_saldo",
+          "ct2_debito",
+          "ct2_credito",
+          "ct2_partida_dobrada",
+          "diff_akd_debito_ct2_debito",
+          "diff_akd_credito_ct2_credito",
+          "diff_saldo_partida_dobrada",
+          "diff_total_akd_ct2",
+          "status_debito",
+          "status_credito",
+          "status_saldo",
         ].filter(field => columns.some(col => col.field === field));
       }}
       if (tab === "glossary") {{
@@ -3204,6 +3467,24 @@ def export_row_matches(
     function formatConfidence(value) {{
       const label = value === "muito_forte" ? "Muito forte" : value === "forte" ? "Forte" : "Provavel";
       return `<span class="pill confidence-${{value}}">${{label}}</span>`;
+    }}
+
+    function formatStatus(value) {{
+      const normalized = String(value ?? "").trim();
+      if (!normalized) return "";
+      const label = normalized === "sem_referencia"
+        ? "Sem referencia"
+        : normalized === "divergente"
+          ? "Divergente"
+          : "Ok";
+      return `<span class="pill status-${{escapeHtml(normalized)}}">${{escapeHtml(label)}}</span>`;
+    }}
+
+    function rowClassName(row) {{
+      if (activeTab !== "budget_account_summary") return "";
+      if (row.status_conta === "ok") return "row-status-ok";
+      if (row.status_conta === "divergente") return "row-status-divergente";
+      return "";
     }}
 
     function renderCopyButton(value) {{
@@ -3375,6 +3656,14 @@ def export_row_matches(
     }}
 
     function rowMatches(row) {{
+      if (activeTab === "budget_account_summary") {{
+        const term = searchEl.value.trim().toLowerCase();
+        const budgetStatus = budgetStatusFilterEl.value;
+        if (budgetStatus && row.status_conta !== budgetStatus) return false;
+        if (!term) return true;
+        const haystack = Object.values(row).join(" ").toLowerCase();
+        return haystack.includes(term);
+      }}
       if (activeTab !== "matches") {{
         const term = searchEl.value.trim().toLowerCase();
         if (!term) return true;
@@ -3424,6 +3713,14 @@ def export_row_matches(
         row.ct2_centro_credito,
         row.akd_historico,
         row.ct2_historico,
+        row.conta_orcamentaria,
+        row.akd_debito,
+        row.akd_credito,
+        row.akd_saldo,
+        row.ct2_partida_dobrada,
+        row.diff_akd_debito_ct2_debito,
+        row.diff_akd_credito_ct2_credito,
+        row.diff_saldo_partida_dobrada,
         row.recno_akd,
         row.recno_ct2
       ].join(" ").toLowerCase();
@@ -3443,7 +3740,12 @@ def export_row_matches(
       const extraClass = col.className ? ` ${{col.className}}` : "";
       const cls = ` class="copyable-cell${{extraClass}}"`;
       const title = col.isHistory ? ` title="${{escapeHtml(rawValue)}}"` : "";
-      const content = col.field === "confidence" ? formatConfidence(rawValue) : escapeHtml(rawValue);
+      const isStatusField = ["date_status", "value_status", "account_status", "status_debito", "status_credito", "status_saldo", "status_conta"].includes(col.field);
+      const content = col.field === "confidence"
+        ? formatConfidence(rawValue)
+        : isStatusField
+          ? formatStatus(rawValue)
+          : escapeHtml(rawValue);
       return `
         <td${{cls}}${{title}}>
           <div class="cell-copy-wrap">
@@ -3628,8 +3930,8 @@ def export_row_matches(
       const isDashboard = activeTab === "dashboard";
       dashboardPanelEl.classList.toggle("active", isDashboard);
       tableMetaEl.style.display = isDashboard ? "none" : "";
-      scrollHintEl.style.display = isDashboard ? "none" : "";
-      resizeHintEl.style.display = isDashboard ? "none" : "";
+      if (scrollHintEl) scrollHintEl.style.display = isDashboard ? "none" : "";
+      if (resizeHintEl) resizeHintEl.style.display = isDashboard ? "none" : "";
       topScrollEl.style.display = isDashboard ? "none" : "";
       tableWrapEl.style.display = isDashboard ? "none" : "";
       resultTableEl.style.display = isDashboard ? "none" : "";
@@ -3674,7 +3976,7 @@ def export_row_matches(
       }});
         initColumnResize();
         rowsEl.innerHTML = pageMeta.rows.map(row => `
-          <tr>${{currentColumns.map(col => renderBodyCell(row, col)).join("")}}</tr>
+          <tr class="${{rowClassName(row)}}">${{currentColumns.map(col => renderBodyCell(row, col)).join("")}}</tr>
         `).join("");
       const headerList = Array.from(resultTableEl.querySelectorAll("thead th"));
       headerList.forEach((th, index) => {{
@@ -3703,7 +4005,7 @@ def export_row_matches(
         }}, 120);
       }});
 
-      [confidenceEl, yearFilterEl, quarterFilterEl, minScoreEl, reasonEl, onlySameValueEl, dateStatusFilterEl, valueStatusFilterEl, accountStatusFilterEl].forEach(el => {{
+      [confidenceEl, yearFilterEl, quarterFilterEl, minScoreEl, reasonEl, onlySameValueEl, dateStatusFilterEl, valueStatusFilterEl, accountStatusFilterEl, budgetStatusFilterEl].forEach(el => {{
         el.addEventListener("input", () => {{
           currentPage = 1;
           render();
@@ -3750,6 +4052,7 @@ def export_row_matches(
       dateStatusFilterEl.value = "";
       valueStatusFilterEl.value = "";
       accountStatusFilterEl.value = "";
+      budgetStatusFilterEl.value = "";
       currentPage = 1;
       render();
     }});
@@ -3912,6 +4215,8 @@ def build_summary(
     ct2_rows: list[dict[str, str]],
     akd_source: Path,
     ct2_source: Path,
+    akd_rows_raw: list[dict[str, str]] | None = None,
+    ct2_rows_raw: list[dict[str, str]] | None = None,
 ) -> dict[str, object]:
     xdoc_summaries = summarize_overlap(
         akd_rows=akd_rows,
@@ -3935,7 +4240,12 @@ def build_summary(
         output_name="overlap_xnumap.csv",
     )
 
-    row_level = export_row_matches(akd_rows, ct2_rows)
+    row_level = export_row_matches(
+        akd_rows,
+        ct2_rows,
+        akd_rows_raw=akd_rows_raw,
+        ct2_rows_raw=ct2_rows_raw,
+    )
     xdoc_status = Counter(item.status for item in xdoc_summaries)
     xdoc_at01cr_status = Counter(item.status for item in xdoc_at01cr_summaries)
     xnumap_status = Counter(item.status for item in xnumap_summaries)
@@ -3981,12 +4291,19 @@ def main() -> None:
     akd_path = resolve_source_path(RAW_DIR, "DADOS-AKD010")
     ct2_path = resolve_source_path(RAW_DIR, "DADOS-CT2010")
 
-    akd_rows = read_rows(akd_path)
-    ct2_rows = read_rows(ct2_path)
+    akd_rows_raw = read_rows(akd_path)
+    ct2_rows_raw = read_rows(ct2_path)
     log_step("Aplicando filtros de origem nas bases")
-    akd_rows = filter_akd_rows(akd_rows)
-    ct2_rows = filter_ct2_rows(ct2_rows)
-    summary = build_summary(akd_rows, ct2_rows, akd_path, ct2_path)
+    akd_rows = filter_akd_rows(akd_rows_raw)
+    ct2_rows = filter_ct2_rows(ct2_rows_raw)
+    summary = build_summary(
+        akd_rows,
+        ct2_rows,
+        akd_path,
+        ct2_path,
+        akd_rows_raw=akd_rows_raw,
+        ct2_rows_raw=ct2_rows_raw,
+    )
 
     OUTPUT_DIR.mkdir(exist_ok=True)
     summary_path = OUTPUT_DIR / "resumo_analise.json"

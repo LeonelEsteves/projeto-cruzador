@@ -25,8 +25,10 @@ O reconciliador trabalha com:
 Arquivos principais:
 - `scripts/analisar_cruzamento_akd_ct2.py`
 - `scripts/analisar_match_profundo_akd_ct2.py`
+- `scripts/gerar_consulta_akc_ct5_excel.py`
 - `docs/MEMORIA_CRUZADOR_AKDXCT2.md`
 - `docs/estrategia_cruzamento.md`
+- `docs/consulta_akc_ct5_lado_a_lado.sql`
 - `saida/relatorio_conciliacao.html`
 - `saida/resumo_analise.json`
 
@@ -63,9 +65,10 @@ As principais ancoras do reconciliador sao:
 4. `AKD_XDOC` no formato `CT2<recno>` apontando para `CT2.R_E_C_N_O_`
 5. `AKD_CHAVE` x `CT2_KEY` por tokens estruturados e alfanumericos extraidos das chaves compostas
 6. para `AKD_PROCES IN (900013, 900025, 900026)`, `AKD_HIST = CT2_HIST` com `data exata + valor igual` como ancora textual forte
-7. `documentos extraidos do historico` com filtro de qualidade e controle de frequencia
-8. `competencia + valor`
-9. `documentos extraidos de historico e campos auxiliares`
+7. para `AKD_PROCES = 900027`, token de `10` digitos apos `RI:` em `AKD_HIST` e `CT2_HIST` com `data exata + valor igual`
+8. `documentos extraidos do historico` com filtro de qualidade e controle de frequencia
+9. `competencia + valor`
+10. `documentos extraidos de historico e campos auxiliares`
 
 ## Extracao Avancada De Documento
 
@@ -110,6 +113,7 @@ O score do match pode ser reforcado por:
 - documento AKD igual ao `CT2_AT01CR`
 - numero AP igual
 - historico exato com `data exata + valor igual` quando `AKD_PROCES IN (900013, 900025, 900026)`
+- token `RI:` com `data exata + valor igual` quando `AKD_PROCES = 900027`
 - ligacao `AKD_XDOC -> RECNO CT2`
 - token estruturado entre `AKD_CHAVE` e `CT2_KEY`
 - documento qualificado extraido do historico
@@ -166,6 +170,8 @@ O arquivo `saida/relatorio_conciliacao.html` possui:
 - aba `CT2 pura`
 - aba `AKD sem match`
 - aba `CT2 sem match`
+- aba `ORCxCTB` com consolidado AKD x CT2 por conta de referencia, coluna `Origem` e contas presentes apenas de um lado
+- filtro `Status contas` na aba `ORCxCTB` para separar contas `ok` de contas `divergente`
 - filtros, busca livre e ordenacao
 - redimensionamento de colunas
 - expansao das colunas de historico
@@ -227,6 +233,7 @@ Na versao atual, o projeto ja contempla:
 - extracao avancada de documentos
 - extracao qualificada de documento a partir do historico com filtro de frequencia
 - ancora textual exata por historico com `data + valor` para os processos `900013`, `900025` e `900026`
+- ancora por token `RI:` com `data + valor` para o processo `900027`
 - ligacao entre `AKD_XDOC` e `RECNO` da `CT2`
 - cruzamento direto entre `AKD_XDOC` e `CT2_AT01CR`
 - cruzamento por tokens estruturados entre `AKD_CHAVE` e `CT2_KEY`
@@ -247,6 +254,7 @@ Na versao atual, o projeto ja contempla:
 - o `RECNO` da `CT2` pode ser usado como evidencia indireta quando codificado em `AKD_XDOC`
 - um registro aparecer em trilha de `sem match` nao significa necessariamente ausencia total de indicio, e sim que ele nao foi escolhido no pareamento final `1x1`
 - a base atual esta sendo trabalhada com recorte filtrado, entao os totais nao devem ser comparados com rodadas antigas sem considerar os filtros de origem
+- excecao: a aba `ORCxCTB` usa um recorte proprio para analise por conta, com `AKD_STATUS = 1`, `AKD_TPSALD IN ('LQ', 'PG', 'AR', 'RB')`, `AKD_ENT05` iniciado por `1`, `3` ou `4`, `CT2_MOEDLC = '01'`, `CT2_TPSALD = '1'` e `CT2_DEBITO` ou `CT2_CREDIT` iniciados por `1`, `3` ou `4`
 
 ## Proximos Passos Sugeridos
 

@@ -19,6 +19,7 @@ FIELD_CHECKS = [
     ("xdoc_ct2_doc", "AKD_XDOC", ["CT2_DOC"], "text"),
     ("xnumap_xdocum", "AKD_XNUMAP", ["CT2_XDOCUM"], "text"),
     ("xnumap_at04db", "AKD_XNUMAP", ["CT2_AT04DB"], "text"),
+    ("proc_900027_ri", "AKD_HIST", ["CT2_HIST"], "text"),
     ("idref_xnumct", "AKD_IDREF", ["CT2_XNUMCT"], "text"),
     ("conta_ref", "AKD_ENT05", ["CT2_DEBITO", "CT2_CREDIT"], "text"),
     ("cc", "AKD_CC", ["CT2_CCD", "CT2_CCC"], "text"),
