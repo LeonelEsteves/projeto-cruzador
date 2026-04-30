@@ -796,6 +796,30 @@ def build_budget_account_summary_rows(
     allowed_prefixes = ("1", "3", "4")
     glossary_descriptions = glossary_descriptions or {}
 
+    def format_budget_value(value: Decimal) -> str:
+        return "-" if value == 0 else f"{value:.2f}"
+
+    def choose_ct2_comparable_value(
+        has_akd: bool,
+        has_ct2: bool,
+        akd_value: Decimal,
+        ct2_debito: Decimal,
+        ct2_credito: Decimal,
+    ) -> Decimal:
+        if not has_ct2:
+            return Decimal("0.00")
+        ct2_abs_saldo = abs(ct2_debito - ct2_credito)
+        if not has_akd:
+            return ct2_abs_saldo
+        candidates = [
+            ct2_abs_saldo,
+            ct2_debito,
+            ct2_credito,
+            max(ct2_debito, ct2_credito),
+            min(ct2_debito, ct2_credito),
+        ]
+        return min(candidates, key=lambda value: (abs(akd_value - value), value))
+
     def account_in_scope(account: str) -> bool:
         return bool(account) and account.startswith(allowed_prefixes)
 
@@ -852,17 +876,36 @@ def build_budget_account_summary_rows(
     rows: list[dict[str, str]] = []
     for account in sorted(summary):
         item = summary[account]
-        akd_tipo_1 = Decimal(item["akd_tipo_1"])
-        akd_tipo_2 = Decimal(item["akd_tipo_2"])
-        ct2_debito = Decimal(item["ct2_debito"])
-        ct2_credito = Decimal(item["ct2_credito"])
+        akd_tipo_1 = Decimal(item.get("akd_tipo_1") or "0")
+        akd_tipo_2 = Decimal(item.get("akd_tipo_2") or "0")
+        ct2_debito = Decimal(item.get("ct2_debito") or "0")
+        ct2_credito = Decimal(item.get("ct2_credito") or "0")
         akd_saldo = akd_tipo_1 - akd_tipo_2
         ct2_partida_dobrada = ct2_debito - ct2_credito
+        has_akd = item["has_akd"] == "sim"
+        has_ct2 = item["has_ct2"] == "sim"
+        valor_orcamentario = abs(akd_saldo)
+        valor_contabil = choose_ct2_comparable_value(
+            has_akd,
+            has_ct2,
+            valor_orcamentario,
+            ct2_debito,
+            ct2_credito,
+        )
+        diff_movimentacao = abs(valor_orcamentario - valor_contabil)
         diff_debito = akd_tipo_1 - ct2_debito
         diff_credito = akd_tipo_2 - ct2_credito
         diff_saldo = akd_saldo - ct2_partida_dobrada
-        has_akd = item["has_akd"] == "sim"
-        has_ct2 = item["has_ct2"] == "sim"
+        status_movimentacao = "ok" if diff_movimentacao == 0 else "divergente"
+        status_debito = "ok" if diff_debito == 0 else "divergente"
+        status_credito = "ok" if diff_credito == 0 else "divergente"
+        status_saldo = "ok" if diff_saldo == 0 else "divergente"
+        if status_movimentacao == "divergente":
+            motivo_divergencia = "Movimentacao"
+        elif status_debito == "divergente" or status_credito == "divergente" or status_saldo == "divergente":
+            motivo_divergencia = "Composicao"
+        else:
+            motivo_divergencia = "Sem divergencia"
         if has_akd and has_ct2:
             origem = "ambos"
         elif has_akd:
@@ -874,6 +917,9 @@ def build_budget_account_summary_rows(
                 "conta_orcamentaria": account,
                 "conta_descricao": glossary_descriptions.get(account, ""),
                 "origem": origem,
+                "valor_orcamentario": format_budget_value(valor_orcamentario),
+                "valor_contabil": format_budget_value(valor_contabil),
+                "diferenca_movimentacao": format_budget_value(diff_movimentacao),
                 "akd_debito": f"{akd_tipo_1:.2f}",
                 "akd_credito": f"{akd_tipo_2:.2f}",
                 "akd_saldo": f"{akd_saldo:.2f}",
@@ -884,13 +930,13 @@ def build_budget_account_summary_rows(
                 "diff_akd_credito_ct2_credito": f"{diff_credito:.2f}",
                 "diff_saldo_partida_dobrada": f"{diff_saldo:.2f}",
                 "diff_total_akd_ct2": f"{diff_saldo:.2f}",
-                "status_debito": "ok" if diff_debito == 0 else "divergente",
-                "status_credito": "ok" if diff_credito == 0 else "divergente",
-                "status_saldo": "ok" if diff_saldo == 0 else "divergente",
+                "motivo_divergencia": motivo_divergencia,
+                "status_movimentacao": status_movimentacao,
+                "status_debito": status_debito,
+                "status_credito": status_credito,
+                "status_saldo": status_saldo,
                 "status_conta": (
-                    "ok"
-                    if diff_debito == 0 and diff_credito == 0 and diff_saldo == 0
-                    else "divergente"
+                    "ok" if status_movimentacao == "ok" else "divergente"
                 ),
             }
         )
@@ -2089,6 +2135,9 @@ def export_row_matches(
         "RECNO CT2": "Identificador unico do registro na base CT2.",
         "Conta": "Conta consolidada para comparar saldos de AKD e CT2.",
         "Origem": "Indica se a conta aparece nos dois lados ou somente na AKD ou na CT2 dentro do recorte filtrado desta aba.",
+        "Valor Orcamentario": "Saldo liquido da AKD por conta, calculado como valor absoluto de (AKD Debito menos AKD Credito), com nulos tratados como zero.",
+        "Valor Contabil": "Valor comparavel da CT2 por conta. Quando ha apenas CT2, usa o saldo liquido absoluto. Quando ha AKD e CT2, escolhe automaticamente a medida da CT2 mais aderente ao resultado da AKD entre saldo, debito e credito.",
+        "Diferenca": "Valor absoluto da diferenca entre o saldo liquido da AKD e o valor comparavel escolhido da CT2. Quando ambos os lados sao zero, a exibicao fica em '-'.",
         "AKD Debito": "Somatoria da AKD para a conta, assumindo AKD_TIPO = 1 como debito.",
         "AKD Credito": "Somatoria da AKD para a conta, assumindo AKD_TIPO = 2 como credito.",
         "AKD Saldo": "Saldo da AKD calculado como debito menos credito usando AKD_STATUS = 1, AKD_TPSALD em LQ/PG/AR/RB e AKD_ENT05 iniciado por 1, 3 ou 4.",
@@ -2098,6 +2147,7 @@ def export_row_matches(
         "Diff Debito": "Diferenca entre AKD Debito e CT2 Debito.",
         "Diff Credito": "Diferenca entre AKD Credito e CT2 Credito.",
         "Diff Saldo": "Diferenca entre AKD Saldo e CT2 P.Dobrada.",
+        "Motivo Divergencia": "Resume em quais frentes a conta ainda diverge na conciliacao: Debito, Credito e/ou Saldo.",
     }
 
     filter_help = {
@@ -2111,7 +2161,7 @@ def export_row_matches(
         "Data divergente": "Compara a data do lancamento da AKD com a data real do lancamento da CT2.",
         "Valor divergente": "Mostra se o valor entre AKD e CT2 bate, diverge ou nao possui referencia suficiente.",
         "Conta divergente": "Mostra se a conta de referencia da AKD bate com debito/credito da CT2, diverge ou esta sem referencia.",
-        "Status contas": "Na aba ORCxCTB, filtra as contas consolidadas entre contas totalmente alinhadas e contas com qualquer divergencia.",
+        "Status contas": "Na aba CTBxORC DET, filtra as contas consolidadas entre contas totalmente alinhadas e contas com qualquer divergencia.",
         "Limpar filtros": "Remove todos os filtros aplicados e volta a exibir todos os registros do relatorio.",
     }
 
@@ -2149,6 +2199,9 @@ def export_row_matches(
         "RECNO CT2": {"field": "recno_ct2", "type": "number"},
         "Origem": {"field": "origem", "type": "string"},
         "Conta": {"field": "conta_orcamentaria", "type": "string"},
+        "Valor Orcamentario": {"field": "valor_orcamentario", "type": "number"},
+        "Valor Contabil": {"field": "valor_contabil", "type": "number"},
+        "Diferenca": {"field": "diferenca_movimentacao", "type": "number"},
         "AKD Debito": {"field": "akd_debito", "type": "number"},
         "AKD Credito": {"field": "akd_credito", "type": "number"},
         "AKD Saldo": {"field": "akd_saldo", "type": "number"},
@@ -2158,6 +2211,8 @@ def export_row_matches(
         "Diff Debito": {"field": "diff_akd_debito_ct2_debito", "type": "number"},
         "Diff Credito": {"field": "diff_akd_credito_ct2_credito", "type": "number"},
         "Diff Saldo": {"field": "diff_saldo_partida_dobrada", "type": "number"},
+        "Status Movimentacao": {"field": "status_movimentacao", "type": "string"},
+        "Motivo Divergencia": {"field": "motivo_divergencia", "type": "string"},
         "Status Debito": {"field": "status_debito", "type": "string"},
         "Status Credito": {"field": "status_credito", "type": "string"},
         "Status Saldo": {"field": "status_saldo", "type": "string"},
@@ -3192,7 +3247,7 @@ def export_row_matches(
                 <path d="M8.75 11h7.5M8.75 14.25h7.5M8.75 17.5h5.25" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
               </svg>
             </span>
-            <span>ORCxCTB</span>
+            <span>CTBxORC DET</span>
           </button>
         </div>
         <div class="dashboard-panel" id="dashboardPanel"></div>
@@ -3256,6 +3311,58 @@ def export_row_matches(
 
     <script>
       const report = {json.dumps(report_data, ensure_ascii=False)};
+      const buildBudgetDivergenceReason = row => {{
+        if (row.motivo_divergencia) return row.motivo_divergencia;
+        if (row.status_movimentacao === "divergente") return "Movimentacao";
+        if (
+          row.status_debito === "divergente" ||
+          row.status_credito === "divergente" ||
+          row.status_saldo === "divergente"
+        ) {{
+          return "Composicao";
+        }}
+        return "Sem divergencia";
+      }};
+      report.budget_account_summary_rows = (report.budget_account_summary_rows || []).map(row => {{
+        const valorOrcamentarioNumero = Math.abs(Number(row.akd_debito || 0) - Number(row.akd_credito || 0));
+        const ct2DebitoNumero = Number(row.ct2_debito || 0);
+        const ct2CreditoNumero = Number(row.ct2_credito || 0);
+        const ct2AbsSaldoNumero = Math.abs(ct2DebitoNumero - ct2CreditoNumero);
+        const hasAkd = String(row.origem || "").includes("akd") || String(row.origem || "") === "ambos";
+        const hasCt2 = String(row.origem || "").includes("ct2") || String(row.origem || "") === "ambos";
+        const ct2Candidates = [
+          ct2AbsSaldoNumero,
+          ct2DebitoNumero,
+          ct2CreditoNumero,
+          Math.max(ct2DebitoNumero, ct2CreditoNumero),
+          Math.min(ct2DebitoNumero, ct2CreditoNumero),
+        ];
+        const valorContabilNumero = !hasCt2
+          ? 0
+          : !hasAkd
+            ? ct2AbsSaldoNumero
+            : ct2Candidates
+              .slice()
+              .sort((a, b) => {{
+                const diffA = Math.abs(valorOrcamentarioNumero - a);
+                const diffB = Math.abs(valorOrcamentarioNumero - b);
+                return diffA - diffB || a - b;
+              }})[0];
+        const diferencaMovimentacaoNumero = Math.abs(valorOrcamentarioNumero - valorContabilNumero);
+        const valorOrcamentario = row.valor_orcamentario ?? (valorOrcamentarioNumero === 0 ? "-" : String(valorOrcamentarioNumero.toFixed(2)));
+        const valorContabil = row.valor_contabil ?? (valorContabilNumero === 0 ? "-" : String(valorContabilNumero.toFixed(2)));
+        const diferencaMovimentacao = row.diferenca_movimentacao ?? (diferencaMovimentacaoNumero === 0 ? "-" : String(diferencaMovimentacaoNumero.toFixed(2)));
+        const statusMovimentacao = row.status_movimentacao ?? (diferencaMovimentacaoNumero === 0 ? "ok" : "divergente");
+        return {{
+          ...row,
+          valor_orcamentario: valorOrcamentario,
+          valor_contabil: valorContabil,
+          diferenca_movimentacao: diferencaMovimentacao,
+          status_movimentacao: statusMovimentacao,
+          status_conta: statusMovimentacao,
+          motivo_divergencia: buildBudgetDivergenceReason({{ ...row, status_movimentacao: statusMovimentacao }}),
+        }};
+      }});
       const versionCommitEl = document.getElementById("versionCommit");
       const versionDateEl = document.getElementById("versionDate");
       const sourceAkdDateEl = document.getElementById("sourceAkdDate");
@@ -3443,18 +3550,10 @@ def export_row_matches(
             {{ title: "Conta", field: "conta_orcamentaria", className: "mono" }},
             {{ title: "Descricao Conta", field: "conta_descricao", className: "" }},
             {{ title: "Origem", field: "origem", className: "mono" }},
-            {{ title: "AKD Debito", field: "akd_debito", className: "mono" }},
-            {{ title: "AKD Credito", field: "akd_credito", className: "mono" }},
-            {{ title: "AKD Saldo", field: "akd_saldo", className: "mono" }},
-            {{ title: "CT2 Debito", field: "ct2_debito", className: "mono" }},
-            {{ title: "CT2 Credito", field: "ct2_credito", className: "mono" }},
-            {{ title: "CT2 P.Dobrada", field: "ct2_partida_dobrada", className: "mono" }},
-            {{ title: "Diff Debito", field: "diff_akd_debito_ct2_debito", className: "mono" }},
-            {{ title: "Diff Credito", field: "diff_akd_credito_ct2_credito", className: "mono" }},
-            {{ title: "Diff Saldo", field: "diff_saldo_partida_dobrada", className: "mono" }},
-            {{ title: "Status Debito", field: "status_debito", className: "mono" }},
-            {{ title: "Status Credito", field: "status_credito", className: "mono" }},
-            {{ title: "Status Saldo", field: "status_saldo", className: "mono" }},
+            {{ title: "Valor Contabil", field: "valor_contabil", className: "mono" }},
+            {{ title: "Valor Orcamentario", field: "valor_orcamentario", className: "mono" }},
+            {{ title: "Diferenca", field: "diferenca_movimentacao", className: "mono" }},
+            {{ title: "Status", field: "status_conta", className: "mono" }},
           ],
         }},
       }};
@@ -3529,19 +3628,10 @@ def export_row_matches(
             "conta_orcamentaria",
             "conta_descricao",
             "origem",
-            "akd_debito",
-            "akd_credito",
-            "akd_saldo",
-          "ct2_debito",
-          "ct2_credito",
-          "ct2_partida_dobrada",
-          "diff_akd_debito_ct2_debito",
-          "diff_akd_credito_ct2_credito",
-          "diff_saldo_partida_dobrada",
-          "diff_total_akd_ct2",
-          "status_debito",
-          "status_credito",
-          "status_saldo",
+            "valor_contabil",
+            "valor_orcamentario",
+            "diferenca_movimentacao",
+            "status_conta",
         ].filter(field => columns.some(col => col.field === field));
       }}
       if (tab === "glossary") {{
@@ -3922,11 +4012,13 @@ def export_row_matches(
     }}
 
     function renderBodyCell(row, col) {{
-      const rawValue = row[col.field] ?? "";
+      const rawValue = col.field === "motivo_divergencia"
+        ? buildBudgetDivergenceReason(row)
+        : (row[col.field] ?? "");
       const extraClass = col.className ? ` ${{col.className}}` : "";
       const cls = ` class="copyable-cell${{extraClass}}"`;
       const title = col.isHistory ? ` title="${{escapeHtml(rawValue)}}"` : "";
-      const isStatusField = ["date_status", "value_status", "account_status", "status_debito", "status_credito", "status_saldo", "status_conta"].includes(col.field);
+      const isStatusField = ["date_status", "value_status", "account_status", "status_movimentacao", "status_debito", "status_credito", "status_saldo", "status_conta"].includes(col.field);
       const content = col.field === "confidence"
         ? formatConfidence(rawValue)
         : isStatusField

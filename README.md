@@ -171,8 +171,8 @@ O arquivo `saida/relatorio_conciliacao.html` possui:
 - aba `AKD sem match`
 - aba `CT2 sem match`
 - icones visuais pertinentes em todas as abas para facilitar a navegacao
-- aba `ORCxCTB` como ultima aba do relatorio, com icone visual de relatorio, consolidado AKD x CT2 por conta de referencia, descricao da conta consultada no glossario, coluna `Origem` e contas presentes apenas de um lado
-- filtro `Status contas` na aba `ORCxCTB` para separar contas `ok` de contas `divergente`
+- aba `CTBxORC DET` como ultima aba do relatorio, com icone visual de relatorio, consolidado AKD x CT2 por conta de referencia, descricao da conta consultada no glossario, coluna `Origem` e contas presentes apenas de um lado
+- filtro `Status contas` na aba `CTBxORC DET` para separar contas `ok` de contas `divergente`
 - opcao para recolher ou expandir a secao de filtros no topo do relatorio
 - filtros, busca livre e ordenacao
 - redimensionamento de colunas
@@ -258,7 +258,7 @@ Na versao atual, o projeto ja contempla:
 - o `RECNO` da `CT2` pode ser usado como evidencia indireta quando codificado em `AKD_XDOC`
 - um registro aparecer em trilha de `sem match` nao significa necessariamente ausencia total de indicio, e sim que ele nao foi escolhido no pareamento final `1x1`
 - a base atual esta sendo trabalhada com recorte filtrado, entao os totais nao devem ser comparados com rodadas antigas sem considerar os filtros de origem
-- excecao: a aba `ORCxCTB` usa um recorte proprio para analise por conta, com `AKD_STATUS = 1`, `AKD_TPSALD IN ('LQ', 'PG', 'AR', 'RB')`, `AKD_ENT05` iniciado por `1`, `3` ou `4`, `CT2_MOEDLC = '01'`, `CT2_TPSALD = '1'` e `CT2_DEBITO` ou `CT2_CREDIT` iniciados por `1`, `3` ou `4`
+- excecao: a aba `CTBxORC DET` usa um recorte proprio para analise por conta, com `AKD_STATUS = 1`, `AKD_TPSALD IN ('LQ', 'PG', 'AR', 'RB')`, `AKD_ENT05` iniciado por `1`, `3` ou `4`, `CT2_MOEDLC = '01'`, `CT2_TPSALD = '1'` e `CT2_DEBITO` ou `CT2_CREDIT` iniciados por `1`, `3` ou `4`
 - o glossario de contas aceita tanto a estrutura antiga com `CT1_CONTA` quanto a nova com `ZL_ITEMORC`; ambas sao exibidas na aba de glossario como `Conta`
 
 ## Proximos Passos Sugeridos
