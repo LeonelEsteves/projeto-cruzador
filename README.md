@@ -23,14 +23,12 @@ O reconciliador trabalha com:
 - `saida/`
 
 Arquivos principais:
-- `scripts/analisar_cruzamento_akd_ct2.py`
-- `scripts/analisar_match_profundo_akd_ct2.py`
-- `scripts/gerar_consulta_akc_ct5_excel.py`
-- `docs/MEMORIA_CRUZADOR_AKDXCT2.md`
-- `docs/estrategia_cruzamento.md`
-- `docs/consulta_akc_ct5_lado_a_lado.sql`
-- `saida/relatorio_conciliacao.html`
-- `saida/resumo_analise.json`
+- `scripts/gerar_relatorio_conciliacao_akd_ct2.py`
+- `scripts/atualizar_csvs_brutos_oracle.py`
+- `scripts/validar_sql_somente_leitura.py`
+- `sql/AKD010.sql`
+- `sql/CT2010.sql`
+- `sql/GLOSSARIO-CONTAS.sql`
 
 ## Entradas
 
@@ -40,8 +38,6 @@ Arquivos esperados em `dados/brutos/`:
 - `GLOSSARIO-CONTAS.csv` ou `GLOSSARIO-CONTAS.xlsx`
 
 Arquivos de referencia em `dados/referencia/`:
-- `DDL-AKD.txt`
-- `DDL-CT2.txt`
 - `DICIONARIO.csv`
 
 ## Filtros De Origem
@@ -148,19 +144,6 @@ Arquivos gerados em `saida/`:
 - `grupos_match_potenciais.csv`
 - `relatorio_conciliacao.html`
 
-Arquivos gerados pela analise profunda de match em `saida/analise_match_profunda/`:
-- `candidatos_match_detalhados.csv`
-- `assinaturas_evidencia.csv`
-- `top_candidatos_akd_sem_match.csv`
-- `top_candidatos_ct2_sem_match.csv`
-- `hipoteses_novas_regras.csv`
-- `campos_prioritarios_akd.csv`
-- `campos_prioritarios_ct2.csv`
-- `sobreposicao_campos_cruzados.csv`
-- `correlacao_campos_match.csv`
-- `origens_candidatos.csv`
-- `resumo_match_profundo.json`
-
 ## Relatorio HTML
 
 O arquivo `saida/relatorio_conciliacao.html` possui:
@@ -185,7 +168,7 @@ O arquivo `saida/relatorio_conciliacao.html` possui:
 No PowerShell, a partir da raiz do projeto:
 
 ```powershell
-python scripts/analisar_cruzamento_akd_ct2.py
+python scripts/gerar_relatorio_conciliacao_akd_ct2.py
 ```
 
 Para consultar diretamente o Oracle em vez dos CSVs:
@@ -194,7 +177,26 @@ Para consultar diretamente o Oracle em vez dos CSVs:
 python -m pip install -r requirements.txt
 copy .\config\oracle.example.json .\config\oracle.json
 notepad .\config\oracle.json
-python scripts/analisar_cruzamento_akd_ct2.py --fonte oracle
+python scripts/gerar_relatorio_conciliacao_akd_ct2.py --fonte oracle
+```
+
+Para atualizar a pasta de dados brutos a partir do Oracle:
+
+```powershell
+python scripts/atualizar_csvs_brutos_oracle.py
+```
+
+O comando acima consulta as queries configuradas em `config/oracle.json` e substitui:
+
+- `dados/brutos/DADOS-AKD010.csv`
+- `dados/brutos/DADOS-CT2010.csv`
+- `dados/brutos/GLOSSARIO-CONTAS.csv`
+
+Por padrao, os arquivos atuais sao copiados para `dados/brutos/backups/` antes da substituicao. Para atualizar apenas uma base:
+
+```powershell
+python scripts/atualizar_csvs_brutos_oracle.py --somente akd
+python scripts/atualizar_csvs_brutos_oracle.py --somente ct2 glossario
 ```
 
 O arquivo `config/oracle.json` nao deve ser versionado, pois contem credenciais. As consultas usadas ficam em:
@@ -203,29 +205,20 @@ O arquivo `config/oracle.json` nao deve ser versionado, pois contem credenciais.
 - `sql/CT2010.sql`
 - `sql/GLOSSARIO-CONTAS.sql`
 
-Para rodar a analise profunda segregada, focada em descobrir novos matches:
+### Politica de seguranca Oracle
 
-```powershell
-python scripts/analisar_match_profundo_akd_ct2.py
-```
+Toda interacao com o Oracle neste projeto deve ser exclusivamente de leitura.
+Os scripts bloqueiam qualquer SQL que nao seja `SELECT` antes de enviar o
+comando ao banco. Tambem sao recusados comandos multiplos e palavras-chave que
+possam alterar dados, estruturas, permissoes ou transacoes, incluindo `UPDATE`,
+`DELETE`, `INSERT`, `MERGE`, `DROP`, `ALTER`, `CREATE`, `TRUNCATE`, `GRANT`,
+`REVOKE`, `COMMIT`, `ROLLBACK`, `BEGIN`, `DECLARE`, `CALL`, `EXEC` e
+`FOR UPDATE`.
 
-Para limitar a trilha de investigacao aos `N` melhores candidatos por registro sem match:
-
-```powershell
-python scripts/analisar_match_profundo_akd_ct2.py --top 10
-```
-
-Para ampliar a profundidade da busca usando mais colunas e mais blocos de candidatos:
-
-```powershell
-python scripts/analisar_match_profundo_akd_ct2.py --modo amplo
-```
-
-Para varrer de forma ainda mais pesada, incluindo grupos por valor puro:
-
-```powershell
-python scripts/analisar_match_profundo_akd_ct2.py --modo exaustivo --limite-grupo-valor 0 --top 20
-```
+Essa trava fica em `scripts/validar_sql_somente_leitura.py` e e usada tanto pela analise
+com `--fonte oracle` quanto pelo atualizador de `dados/brutos`. Se uma query
+nos arquivos `sql/*.sql` ou em `config/oracle.json` violar essa politica, a
+execucao e interrompida antes da chamada ao Oracle.
 
 Para abrir o relatorio:
 
@@ -236,13 +229,12 @@ start .\saida\relatorio_conciliacao.html
 ## Estado Atual
 
 Totais da rodada atual, conforme `saida/resumo_analise.json`:
-- `AKD`: `20.346`
-- `CT2`: `27.966`
-- `candidatos_gerados`: `264.308`
-- `matches_selecionados`: `9.874`
-- `muito_forte`: `9.392`
-- `forte`: `462`
-- `provavel`: `20`
+- `AKD`: `2.125`
+- `CT2`: `650`
+- `candidatos_gerados`: `1.177`
+- `matches_selecionados`: `290`
+- `muito_forte`: `283`
+- `forte`: `7`
 
 Na versao atual, o projeto ja contempla:
 - cruzamento documental
@@ -264,7 +256,6 @@ Na versao atual, o projeto ja contempla:
 - painel visual com dashboard e trilhas de pendencia
 - identificacao visual da versao do cruzador no HTML
 - exibicao, no topo do HTML, da data de atualizacao dos arquivos ativos de `AKD`, `CT2` e `Glossario`
-- analise profunda segregada para investigar candidatos e desenhar novas regras de match
 - na aba `Glossario de contas`, todas as colunas ficam visiveis por padrao e a largura e redistribuida para ocupar toda a grid
 
 ## Observacoes Importantes
@@ -283,21 +274,6 @@ Na versao atual, o projeto ja contempla:
 - criar trilha especifica para conflitos `Nx1`
 - evoluir reconciliacao por grupo `1xN` e `NxN`
 
-## Analise Profunda De Match
-
-O script `scripts/analisar_match_profundo_akd_ct2.py` serve para investigar candidatos de cruzamento sem alterar a logica principal do reconciliador.
-
-Ele foi pensado para apoiar a descoberta de novas regras, mostrando:
-- todos os candidatos de match gerados pelo motor atual, com score, evidencias e status de selecao
-- candidatos adicionais descobertos por blocos mais amplos como `ano + valor`, `trimestre + valor`, `conta + valor`, `CC + valor`, `classe + valor`, `item + valor`, `filial + valor` e, no modo exaustivo, `valor puro`
-- assinaturas recorrentes de evidencia para entender o que mais gera match e o que mais fica bloqueado
-- correlacao entre outras colunas relevantes das duas bases para apoiar novas hipoteses de regra
-- perfil automatico das colunas mais preenchidas e mais discriminantes de cada base
-- sobreposicao entre campos cruzaveis normalizados, incluindo documento, token estruturado, conta, centro de custo, classe, item, mes, ano e trimestre
-- os melhores candidatos para cada `AKD` e `CT2` que ficaram sem match final
-- hipoteses de novas regras com base em combinacoes recorrentes de sinais como `AT04DB`, `competencia`, `conta`, `CC`, `texto`, `tokens`, `chave estruturada` e `documento extra`
-- hipoteses de novas regras com base em combinacoes recorrentes de sinais como `AT01CR`, `AT04DB`, `competencia`, `conta`, `CC`, `texto`, `tokens`, `chave estruturada` e `documento extra`
-
 ## Grupos Potenciais 1xN E Nx1
 
 O reconciliador principal continua fechando a conciliacao oficial em `1x1`, mas agora tambem exporta a trilha `saida/grupos_match_potenciais.csv`.
@@ -313,11 +289,3 @@ Os tipos atuais sao:
 - `ct2_Nx1`: um registro CT2 com multiplos AKD muito fortes
 
 Essa saida foi criada para apoiar a futura implementacao de reconciliacao por grupo sem perder a seguranca do fluxo `1x1`.
-
-Leitura sugerida dos resultados:
-- comece por `resumo_match_profundo.json`
-- depois revise `hipoteses_novas_regras.csv`
-- em seguida leia `correlacao_campos_match.csv` e `origens_candidatos.csv`
-- depois use `campos_prioritarios_akd.csv`, `campos_prioritarios_ct2.csv` e `sobreposicao_campos_cruzados.csv` para localizar novas colunas promissoras
-- em seguida priorize `top_candidatos_akd_sem_match.csv` e `top_candidatos_ct2_sem_match.csv`
-- use `assinaturas_evidencia.csv` para decidir quais combinacoes merecem virar regra nova no cruzador principal
