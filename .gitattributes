@@ -1,0 +1,2 @@
+saida/relatorio_conciliacao.html filter=lfs diff=lfs merge=lfs -text
+saida/analise_match_profunda/candidatos_match_detalhados.csv filter=lfs diff=lfs merge=lfs -text
