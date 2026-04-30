@@ -1,0 +1,10 @@
+{
+  "user": "SEU_USUARIO",
+  "password": "SUA_SENHA",
+  "dsn": "servidor:1521/service_name",
+  "queries": {
+    "akd": "sql/AKD010.sql",
+    "ct2": "sql/CT2010.sql",
+    "glossario": "sql/GLOSSARIO-CONTAS.sql"
+  }
+}

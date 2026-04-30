@@ -188,6 +188,21 @@ No PowerShell, a partir da raiz do projeto:
 python scripts/analisar_cruzamento_akd_ct2.py
 ```
 
+Para consultar diretamente o Oracle em vez dos CSVs:
+
+```powershell
+python -m pip install -r requirements.txt
+copy .\config\oracle.example.json .\config\oracle.json
+notepad .\config\oracle.json
+python scripts/analisar_cruzamento_akd_ct2.py --fonte oracle
+```
+
+O arquivo `config/oracle.json` nao deve ser versionado, pois contem credenciais. As consultas usadas ficam em:
+
+- `sql/AKD010.sql`
+- `sql/CT2010.sql`
+- `sql/GLOSSARIO-CONTAS.sql`
+
 Para rodar a analise profunda segregada, focada em descobrir novos matches:
 
 ```powershell

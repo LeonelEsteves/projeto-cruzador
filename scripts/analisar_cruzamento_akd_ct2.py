@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime
@@ -21,6 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_DIR = ROOT / "saida"
 RAW_DIR = ROOT / "dados" / "brutos"
 REFERENCE_DIR = ROOT / "dados" / "referencia"
+DEFAULT_ORACLE_CONFIG = ROOT / "config" / "oracle.json"
 CT2_ALLOWED_MOEDLC = {"01"}
 CT2_ALLOWED_DC = {"1", "2"}
 AKD_ALLOWED_TPSALD = {"LQ", "PG", "AR", "RB"}
@@ -58,6 +60,24 @@ class ProgressBar:
 
 def log_step(message: str) -> None:
     print(f"[etapa] {message}", flush=True)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Analise de conciliacao AKD x CT2 com origem em CSV ou Oracle."
+    )
+    parser.add_argument(
+        "--fonte",
+        choices=["csv", "oracle"],
+        default="csv",
+        help="Origem dos dados principais. Padrao: csv.",
+    )
+    parser.add_argument(
+        "--oracle-config",
+        default=str(DEFAULT_ORACLE_CONFIG),
+        help="Arquivo JSON com credenciais e queries Oracle.",
+    )
+    return parser.parse_args()
 
 
 def git_output(*args: str) -> str:
@@ -205,6 +225,72 @@ def read_rows(path: Path) -> list[dict[str, str]]:
     if suffix == ".xlsx":
         return read_excel_rows(path)
     raise ValueError(f"Formato de arquivo nao suportado: {path.name}")
+
+
+def resolve_repo_path(value: str) -> Path:
+    path = Path(value).expanduser()
+    return path if path.is_absolute() else ROOT / path
+
+
+def load_query(value: str) -> str:
+    text = clean(value)
+    if not text:
+        raise ValueError("Query Oracle vazia.")
+    if text.lstrip().upper().startswith("SELECT"):
+        return text
+    return resolve_repo_path(text).read_text(encoding="utf-8")
+
+
+def load_oracle_config(path: Path) -> dict[str, object]:
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Configuracao Oracle nao encontrada: {path}. "
+            "Copie config/oracle.example.json para config/oracle.json e preencha os dados."
+        )
+    config = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(config, dict):
+        raise ValueError("Configuracao Oracle invalida: esperado um objeto JSON.")
+    return config
+
+
+def oracle_text(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        return value.strftime("%Y%m%d")
+    if isinstance(value, Decimal):
+        return format(value, "f")
+    return str(value).strip()
+
+
+def read_oracle_rows(config: dict[str, object], name: str) -> list[dict[str, str]]:
+    try:
+        import oracledb
+    except ImportError as exc:
+        raise RuntimeError(
+            "Dependencia Oracle ausente. Instale com: python -m pip install oracledb"
+        ) from exc
+
+    queries = config.get("queries")
+    if not isinstance(queries, dict) or name not in queries:
+        raise ValueError(f"Query Oracle '{name}' nao configurada.")
+
+    user = clean(config.get("user", ""))
+    password = clean(config.get("password", ""))
+    dsn = clean(config.get("dsn", ""))
+    if not user or not password or not dsn:
+        raise ValueError("Preencha user, password e dsn em config/oracle.json.")
+
+    query = load_query(str(queries[name]))
+    log_step(f"Consultando Oracle: {name}")
+    with oracledb.connect(user=user, password=password, dsn=dsn) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(query)
+            columns = [str(col[0]).upper() for col in cursor.description]
+            return [
+                {columns[index]: oracle_text(value) for index, value in enumerate(row)}
+                for row in cursor
+            ]
 
 
 def resolve_source_path(directory: Path, stem: str) -> Path:
@@ -613,7 +699,9 @@ def history_doc_keys_ct2(row: dict[str, str]) -> set[str]:
     }
 
 
-def format_source_updated_at(path: Path) -> str:
+def format_source_updated_at(path: Path | str) -> str:
+    if isinstance(path, str):
+        return path
     return datetime.fromtimestamp(path.stat().st_mtime).strftime("%d/%m/%Y %H:%M")
 
 
@@ -1713,8 +1801,10 @@ def export_row_matches(
     ct2_rows: list[dict[str, str]],
     akd_rows_raw: list[dict[str, str]] | None = None,
     ct2_rows_raw: list[dict[str, str]] | None = None,
-    akd_source: Path | None = None,
-    ct2_source: Path | None = None,
+    akd_source: Path | str | None = None,
+    ct2_source: Path | str | None = None,
+    glossary_rows: list[dict[str, str]] | None = None,
+    glossary_source: Path | str | None = None,
 ) -> dict[str, object]:
     log_step("Gerando reconciliacao linha a linha")
     akd_map = {normalize_recno(row["R_E_C_N_O_"]): row for row in akd_rows}
@@ -2025,8 +2115,12 @@ def export_row_matches(
     ct2_pure_rows, ct2_pure_columns = build_pure_tab_rows(
         ct2_rows, dictionary_defs.get("CT2", [])
     )
-    glossary_path = resolve_source_path(RAW_DIR, "GLOSSARIO-CONTAS")
-    glossary_rows = read_rows(glossary_path)
+    if glossary_rows is None:
+        glossary_path = resolve_source_path(RAW_DIR, "GLOSSARIO-CONTAS")
+        glossary_rows = read_rows(glossary_path)
+        glossary_source = glossary_path
+    elif glossary_source is None:
+        glossary_source = "Oracle"
     glossary_descriptions = glossary_account_description_map(glossary_rows)
     glossary_tab_rows, glossary_tab_columns = build_generic_tab_rows(
         glossary_rows,
@@ -2105,7 +2199,7 @@ def export_row_matches(
         "source_updates": {
             "akd": format_source_updated_at(akd_source) if akd_source else "",
             "ct2": format_source_updated_at(ct2_source) if ct2_source else "",
-            "glossario": format_source_updated_at(glossary_path),
+            "glossario": format_source_updated_at(glossary_source) if glossary_source else "",
         },
     }
 
@@ -2839,13 +2933,15 @@ def export_row_matches(
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      width: 18px;
+      min-width: 34px;
+      padding: 0 5px;
       height: 18px;
       border-radius: 999px;
       border: 1px solid rgba(148, 163, 184, 0.35);
       background: rgba(255, 255, 255, 0.72);
       color: #94a3b8;
-      font-size: 10px;
+      font-size: 9px;
+      font-weight: 700;
       line-height: 1;
       flex: 0 0 auto;
     }}
@@ -3757,7 +3853,7 @@ def export_row_matches(
     function renderHeader(col) {{
       const isSorted = sortState.field === col.field;
       const sortDirection = isSorted ? sortState.direction : "";
-      const sortIcon = sortDirection === "asc" ? "▲" : sortDirection === "desc" ? "▼" : "↕";
+      const sortIcon = sortDirection === "asc" ? "ASC" : sortDirection === "desc" ? "DESC" : "ORD";
       const sortHint = !sortDirection
         ? "Clique para ordenar"
         : sortDirection === "asc"
@@ -4499,10 +4595,12 @@ def export_row_matches(
 def build_summary(
     akd_rows: list[dict[str, str]],
     ct2_rows: list[dict[str, str]],
-    akd_source: Path,
-    ct2_source: Path,
+    akd_source: Path | str,
+    ct2_source: Path | str,
     akd_rows_raw: list[dict[str, str]] | None = None,
     ct2_rows_raw: list[dict[str, str]] | None = None,
+    glossary_rows: list[dict[str, str]] | None = None,
+    glossary_source: Path | str | None = None,
 ) -> dict[str, object]:
     xdoc_summaries = summarize_overlap(
         akd_rows=akd_rows,
@@ -4533,6 +4631,8 @@ def build_summary(
         ct2_rows_raw=ct2_rows_raw,
         akd_source=akd_source,
         ct2_source=ct2_source,
+        glossary_rows=glossary_rows,
+        glossary_source=glossary_source,
     )
     xdoc_status = Counter(item.status for item in xdoc_summaries)
     xdoc_at01cr_status = Counter(item.status for item in xdoc_at01cr_summaries)
@@ -4540,8 +4640,8 @@ def build_summary(
 
     return {
         "arquivos": {
-            "akd": akd_source.name,
-            "ct2": ct2_source.name,
+            "akd": akd_source.name if isinstance(akd_source, Path) else akd_source,
+            "ct2": ct2_source.name if isinstance(ct2_source, Path) else ct2_source,
         },
         "linhas": {
             "akd": len(akd_rows),
@@ -4575,12 +4675,25 @@ def build_summary(
 
 
 def main() -> None:
+    args = parse_args()
     log_step("Inicio da analise AKD x CT2")
-    akd_path = resolve_source_path(RAW_DIR, "DADOS-AKD010")
-    ct2_path = resolve_source_path(RAW_DIR, "DADOS-CT2010")
-
-    akd_rows_raw = read_rows(akd_path)
-    ct2_rows_raw = read_rows(ct2_path)
+    glossary_rows: list[dict[str, str]] | None = None
+    glossary_source: Path | str | None = None
+    if args.fonte == "oracle":
+        oracle_config_path = resolve_repo_path(args.oracle_config)
+        oracle_config = load_oracle_config(oracle_config_path)
+        loaded_at = f"Oracle em {datetime.now().strftime('%d/%m/%Y %H:%M')}"
+        akd_path: Path | str = loaded_at
+        ct2_path: Path | str = loaded_at
+        glossary_source = loaded_at
+        akd_rows_raw = read_oracle_rows(oracle_config, "akd")
+        ct2_rows_raw = read_oracle_rows(oracle_config, "ct2")
+        glossary_rows = read_oracle_rows(oracle_config, "glossario")
+    else:
+        akd_path = resolve_source_path(RAW_DIR, "DADOS-AKD010")
+        ct2_path = resolve_source_path(RAW_DIR, "DADOS-CT2010")
+        akd_rows_raw = read_rows(akd_path)
+        ct2_rows_raw = read_rows(ct2_path)
     log_step("Aplicando filtros de origem nas bases")
     akd_rows = filter_akd_rows(akd_rows_raw)
     ct2_rows = filter_ct2_rows(ct2_rows_raw)
@@ -4591,6 +4704,8 @@ def main() -> None:
         ct2_path,
         akd_rows_raw=akd_rows_raw,
         ct2_rows_raw=ct2_rows_raw,
+        glossary_rows=glossary_rows,
+        glossary_source=glossary_source,
     )
 
     OUTPUT_DIR.mkdir(exist_ok=True)
