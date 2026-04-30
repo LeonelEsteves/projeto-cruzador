@@ -613,6 +613,10 @@ def history_doc_keys_ct2(row: dict[str, str]) -> set[str]:
     }
 
 
+def format_source_updated_at(path: Path) -> str:
+    return datetime.fromtimestamp(path.stat().st_mtime).strftime("%d/%m/%Y %H:%M")
+
+
 def row_doc_keys_akd(row: dict[str, str]) -> set[str]:
     fields = [
         row.get("AKD_XDOC", ""),
@@ -768,12 +772,29 @@ def build_generic_tab_rows(
     return normalized_rows, columns
 
 
+def glossary_account_description_map(rows: list[dict[str, str]]) -> dict[str, str]:
+    descriptions: dict[str, str] = {}
+    for row in rows:
+        account = clean(row.get("ZL_ITEMORC", "")) or clean(row.get("CT1_CONTA", ""))
+        description = (
+            clean(row.get("CT1_DESC01", ""))
+            or clean(row.get("ZL_DESC", ""))
+            or clean(row.get("DESCRICAO", ""))
+            or clean(row.get("DESC", ""))
+        )
+        if account and description and account not in descriptions:
+            descriptions[account] = description
+    return descriptions
+
+
 def build_budget_account_summary_rows(
     akd_rows: list[dict[str, str]],
     ct2_rows: list[dict[str, str]],
+    glossary_descriptions: dict[str, str] | None = None,
 ) -> list[dict[str, str]]:
     summary: dict[str, dict[str, Decimal | str]] = {}
     allowed_prefixes = ("1", "3", "4")
+    glossary_descriptions = glossary_descriptions or {}
 
     def account_in_scope(account: str) -> bool:
         return bool(account) and account.startswith(allowed_prefixes)
@@ -851,6 +872,7 @@ def build_budget_account_summary_rows(
         rows.append(
             {
                 "conta_orcamentaria": account,
+                "conta_descricao": glossary_descriptions.get(account, ""),
                 "origem": origem,
                 "akd_debito": f"{akd_tipo_1:.2f}",
                 "akd_credito": f"{akd_tipo_2:.2f}",
@@ -1645,6 +1667,8 @@ def export_row_matches(
     ct2_rows: list[dict[str, str]],
     akd_rows_raw: list[dict[str, str]] | None = None,
     ct2_rows_raw: list[dict[str, str]] | None = None,
+    akd_source: Path | None = None,
+    ct2_source: Path | None = None,
 ) -> dict[str, object]:
     log_step("Gerando reconciliacao linha a linha")
     akd_map = {normalize_recno(row["R_E_C_N_O_"]): row for row in akd_rows}
@@ -1957,10 +1981,12 @@ def export_row_matches(
     )
     glossary_path = resolve_source_path(RAW_DIR, "GLOSSARIO-CONTAS")
     glossary_rows = read_rows(glossary_path)
+    glossary_descriptions = glossary_account_description_map(glossary_rows)
     glossary_tab_rows, glossary_tab_columns = build_generic_tab_rows(
         glossary_rows,
-        preferred_fields=["CT1_CONTA", "CT1_DESC01"],
+        preferred_fields=["CT1_CONTA", "ZL_ITEMORC", "CT1_DESC01"],
         title_map={
+            "ZL_ITEMORC": "Conta",
             "CT1_CONTA": "Conta",
             "CT1_DESC01": "Descricao",
         },
@@ -1968,6 +1994,7 @@ def export_row_matches(
     budget_account_summary_rows = build_budget_account_summary_rows(
         akd_rows_raw or akd_rows,
         ct2_rows_raw or ct2_rows,
+        glossary_descriptions,
     )
 
     report_data = {
@@ -2029,6 +2056,11 @@ def export_row_matches(
         "years": sorted({row["akd_year"] for row in report_rows if row["akd_year"]}),
         "quarters": sorted({row["akd_quarter"] for row in report_rows if row["akd_quarter"]}),
         "version": version_info,
+        "source_updates": {
+            "akd": format_source_updated_at(akd_source) if akd_source else "",
+            "ct2": format_source_updated_at(ct2_source) if ct2_source else "",
+            "glossario": format_source_updated_at(glossary_path),
+        },
     }
 
     header_help = {
@@ -2130,6 +2162,7 @@ def export_row_matches(
         "Status Credito": {"field": "status_credito", "type": "string"},
         "Status Saldo": {"field": "status_saldo", "type": "string"},
         "Conta": {"field": "conta_orcamentaria", "type": "string"},
+        "Descricao Conta": {"field": "conta_descricao", "type": "string"},
         "AKD Debito": {"field": "akd_debito", "type": "number"},
         "AKD Credito": {"field": "akd_credito", "type": "number"},
         "AKD Saldo": {"field": "akd_saldo", "type": "number"},
@@ -2320,11 +2353,25 @@ def export_row_matches(
         font: inherit;
         cursor: pointer;
         font-weight: 600;
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
       }}
       .tab-btn.active {{
         background: var(--accent);
         color: white;
         border-color: var(--accent);
+      }}
+      .tab-icon {{
+        display: inline-flex;
+        width: 15px;
+        height: 15px;
+        flex: 0 0 15px;
+      }}
+      .tab-icon svg {{
+        width: 100%;
+        height: 100%;
+        display: block;
       }}
       .dashboard-panel {{
         display: none;
@@ -2970,6 +3017,9 @@ def export_row_matches(
       <div class="version-strip">
         <div class="version-pill"><strong>Versao:</strong> <span id="versionCommit">--</span></div>
         <div class="version-pill"><strong>Atualizado em:</strong> <span id="versionDate">--</span></div>
+        <div class="version-pill"><strong>AKD:</strong> <span id="sourceAkdDate">--</span></div>
+        <div class="version-pill"><strong>CT2:</strong> <span id="sourceCt2Date">--</span></div>
+        <div class="version-pill"><strong>Glossario:</strong> <span id="sourceGlossaryDate">--</span></div>
         <div class="version-pill"><strong>Repositorio:</strong> <span id="versionRepo">--</span></div>
       </div>
     </section>
@@ -3065,16 +3115,85 @@ def export_row_matches(
       </div>
     </section>
 
-      <section class="table-wrap">
+        <section class="table-wrap">
         <div class="tabs">
-          <button class="tab-btn" data-tab="dashboard">Dashboard</button>
-          <button class="tab-btn" data-tab="glossary">Glossario de contas</button>
-          <button class="tab-btn active" data-tab="matches">Matches</button>
-          <button class="tab-btn" data-tab="akd_unmatched">AKD sem match</button>
-          <button class="tab-btn" data-tab="ct2_unmatched">CT2 sem match</button>
-          <button class="tab-btn" data-tab="budget_account_summary">ORCxCTB</button>
-          <button class="tab-btn" data-tab="akd_all">AKD pura</button>
-          <button class="tab-btn" data-tab="ct2_all">CT2 pura</button>
+          <button class="tab-btn" data-tab="dashboard">
+            <span class="tab-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none">
+                <path d="M4.75 12.5 12 5.75l7.25 6.75V19a1.25 1.25 0 0 1-1.25 1.25H6A1.25 1.25 0 0 1 4.75 19V12.5Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+                <path d="M9 20.25v-5.5h6v5.5" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+              </svg>
+            </span>
+            <span>Dashboard</span>
+          </button>
+          <button class="tab-btn" data-tab="glossary">
+            <span class="tab-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none">
+                <path d="M5.75 6.25A2.5 2.5 0 0 1 8.25 3.75h10v16.5h-10a2.5 2.5 0 0 0-2.5 2.5V6.25Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+                <path d="M8.25 3.75a2.5 2.5 0 0 0-2.5 2.5v13.5a2.5 2.5 0 0 1 2.5-2.5h10" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+                <path d="M9.5 8h5.75M9.5 11.25h5.75M9.5 14.5h4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+              </svg>
+            </span>
+            <span>Glossario de contas</span>
+          </button>
+          <button class="tab-btn active" data-tab="matches">
+            <span class="tab-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none">
+                <circle cx="8" cy="8" r="3.25" stroke="currentColor" stroke-width="1.7"/>
+                <circle cx="16" cy="16" r="3.25" stroke="currentColor" stroke-width="1.7"/>
+                <path d="M10.3 10.3 13.7 13.7" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+              </svg>
+            </span>
+            <span>Matches</span>
+          </button>
+          <button class="tab-btn" data-tab="akd_unmatched">
+            <span class="tab-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none">
+                <path d="M7 5.75h10A1.25 1.25 0 0 1 18.25 7v10A1.25 1.25 0 0 1 17 18.25H7A1.25 1.25 0 0 1 5.75 17V7A1.25 1.25 0 0 1 7 5.75Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+                <path d="M8.75 8.75h7.5M8.75 12h7.5M8.75 15.25h4.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+                <path d="m15.75 15.75 3 3M18.75 15.75l-3 3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+              </svg>
+            </span>
+            <span>AKD sem match</span>
+          </button>
+          <button class="tab-btn" data-tab="ct2_unmatched">
+            <span class="tab-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none">
+                <path d="M7 5.75h10A1.25 1.25 0 0 1 18.25 7v10A1.25 1.25 0 0 1 17 18.25H7A1.25 1.25 0 0 1 5.75 17V7A1.25 1.25 0 0 1 7 5.75Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+                <path d="M8.75 8.75h7.5M8.75 12h7.5M8.75 15.25h4.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+                <circle cx="18" cy="17.75" r="2.25" stroke="currentColor" stroke-width="1.7"/>
+              </svg>
+            </span>
+            <span>CT2 sem match</span>
+          </button>
+          <button class="tab-btn" data-tab="akd_all">
+            <span class="tab-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none">
+                <path d="M5.75 7A1.25 1.25 0 0 1 7 5.75h10A1.25 1.25 0 0 1 18.25 7v10A1.25 1.25 0 0 1 17 18.25H7A1.25 1.25 0 0 1 5.75 17V7Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+                <path d="M8.5 8.75h7M8.5 12h7M8.5 15.25h7" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+              </svg>
+            </span>
+            <span>AKD pura</span>
+          </button>
+          <button class="tab-btn" data-tab="ct2_all">
+            <span class="tab-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none">
+                <rect x="5.75" y="5.75" width="12.5" height="12.5" rx="1.25" stroke="currentColor" stroke-width="1.7"/>
+                <path d="M9 5.75v12.5M15 5.75v12.5M5.75 9h12.5M5.75 15h12.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+              </svg>
+            </span>
+            <span>CT2 pura</span>
+          </button>
+          <button class="tab-btn" data-tab="budget_account_summary">
+            <span class="tab-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none">
+                <path d="M7 3.75h7.5L19.25 8.5V19a1.25 1.25 0 0 1-1.25 1.25H7A1.25 1.25 0 0 1 5.75 19V5A1.25 1.25 0 0 1 7 3.75Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+                <path d="M14.5 3.75V8.5H19.25" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+                <path d="M8.75 11h7.5M8.75 14.25h7.5M8.75 17.5h5.25" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+              </svg>
+            </span>
+            <span>ORCxCTB</span>
+          </button>
         </div>
         <div class="dashboard-panel" id="dashboardPanel"></div>
         <div class="table-meta">
@@ -3139,6 +3258,9 @@ def export_row_matches(
       const report = {json.dumps(report_data, ensure_ascii=False)};
       const versionCommitEl = document.getElementById("versionCommit");
       const versionDateEl = document.getElementById("versionDate");
+      const sourceAkdDateEl = document.getElementById("sourceAkdDate");
+      const sourceCt2DateEl = document.getElementById("sourceCt2Date");
+      const sourceGlossaryDateEl = document.getElementById("sourceGlossaryDate");
       const versionRepoEl = document.getElementById("versionRepo");
       const rowsEl = document.getElementById("rows");
       const dashboardPanelEl = document.getElementById("dashboardPanel");
@@ -3205,8 +3327,12 @@ def export_row_matches(
 
     function renderVersionInfo() {{
       const version = report.version || {{}};
+      const sourceUpdates = report.source_updates || {{}};
       versionCommitEl.textContent = version.commit_short || "sem commit";
       versionDateEl.textContent = version.generated_at || "sem data";
+      sourceAkdDateEl.textContent = sourceUpdates.akd || "sem data";
+      sourceCt2DateEl.textContent = sourceUpdates.ct2 || "sem data";
+      sourceGlossaryDateEl.textContent = sourceUpdates.glossario || "sem data";
       if (version.commit_url && version.repo_web) {{
         versionRepoEl.innerHTML = `<a href="${{escapeHtml(version.commit_url)}}" target="_blank" rel="noreferrer">${{escapeHtml(version.repo_web)}} @ ${{escapeHtml(version.commit_short || "")}}</a>`;
       }} else if (version.repo_url) {{
@@ -3315,6 +3441,7 @@ def export_row_matches(
           rows: report.budget_account_summary_rows,
           columns: [
             {{ title: "Conta", field: "conta_orcamentaria", className: "mono" }},
+            {{ title: "Descricao Conta", field: "conta_descricao", className: "" }},
             {{ title: "Origem", field: "origem", className: "mono" }},
             {{ title: "AKD Debito", field: "akd_debito", className: "mono" }},
             {{ title: "AKD Credito", field: "akd_credito", className: "mono" }},
@@ -3397,13 +3524,14 @@ def export_row_matches(
           "recno_ct2",
         ].filter(field => columns.some(col => col.field === field));
       }}
-      if (tab === "budget_account_summary") {{
-        return [
-          "conta_orcamentaria",
-          "origem",
-          "akd_debito",
-          "akd_credito",
-          "akd_saldo",
+        if (tab === "budget_account_summary") {{
+          return [
+            "conta_orcamentaria",
+            "conta_descricao",
+            "origem",
+            "akd_debito",
+            "akd_credito",
+            "akd_saldo",
           "ct2_debito",
           "ct2_credito",
           "ct2_partida_dobrada",
@@ -3417,10 +3545,7 @@ def export_row_matches(
         ].filter(field => columns.some(col => col.field === field));
       }}
       if (tab === "glossary") {{
-        return [
-          "CT1_CONTA",
-          "CT1_DESC01",
-        ].filter(field => columns.some(col => col.field === field));
+        return columns.map(col => col.field);
       }}
       const preferred = columns
         .filter(col => /(FILIAL|LOTE|DATA|VALOR|HIST|XDOC|XDOCUM|XNUMAP|R_E_C_N_O_|DEBITO|CREDIT)/i.test(col.field))
@@ -3609,6 +3734,20 @@ def export_row_matches(
         const computed = Math.min(cap, Math.max(floor, Math.min(maxLen, 28) * 7 + 34, base));
         th.style.width = `${{computed}}px`;
       }});
+      if (activeTab === "glossary" && headers.length) {{
+        const availableWidth = Math.max(0, tableWrapEl.clientWidth - 24);
+        const widths = headers.map((th) => th.offsetWidth);
+        const totalWidth = widths.reduce((sum, width) => sum + width, 0);
+        const remaining = availableWidth - totalWidth;
+        if (remaining > 0) {{
+          const extraPerColumn = Math.floor(remaining / headers.length);
+          let remainder = remaining - (extraPerColumn * headers.length);
+          headers.forEach((th, index) => {{
+            const bonus = extraPerColumn + (index < remainder ? 1 : 0);
+            th.style.width = `${{widths[index] + bonus}}px`;
+          }});
+        }}
+      }}
       syncHorizontalScroll();
     }}
 
@@ -4300,6 +4439,8 @@ def build_summary(
         ct2_rows,
         akd_rows_raw=akd_rows_raw,
         ct2_rows_raw=ct2_rows_raw,
+        akd_source=akd_source,
+        ct2_source=ct2_source,
     )
     xdoc_status = Counter(item.status for item in xdoc_summaries)
     xdoc_at01cr_status = Counter(item.status for item in xdoc_at01cr_summaries)

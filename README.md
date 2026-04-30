@@ -37,7 +37,7 @@ Arquivos principais:
 Arquivos esperados em `dados/brutos/`:
 - `DADOS-AKD010.csv`
 - `DADOS-CT2010.csv`
-- `GLOSSARIO-CONTAS.xlsx`
+- `GLOSSARIO-CONTAS.csv` ou `GLOSSARIO-CONTAS.xlsx`
 
 Arquivos de referencia em `dados/referencia/`:
 - `DDL-AKD.txt`
@@ -170,7 +170,8 @@ O arquivo `saida/relatorio_conciliacao.html` possui:
 - aba `CT2 pura`
 - aba `AKD sem match`
 - aba `CT2 sem match`
-- aba `ORCxCTB` com consolidado AKD x CT2 por conta de referencia, coluna `Origem` e contas presentes apenas de um lado
+- icones visuais pertinentes em todas as abas para facilitar a navegacao
+- aba `ORCxCTB` como ultima aba do relatorio, com icone visual de relatorio, consolidado AKD x CT2 por conta de referencia, descricao da conta consultada no glossario, coluna `Origem` e contas presentes apenas de um lado
 - filtro `Status contas` na aba `ORCxCTB` para separar contas `ok` de contas `divergente`
 - opcao para recolher ou expandir a secao de filtros no topo do relatorio
 - filtros, busca livre e ordenacao
@@ -247,7 +248,9 @@ Na versao atual, o projeto ja contempla:
 - trilha segregada para grupos potenciais `1xN` e `Nx1` quando o `1x1` bloqueia candidatos muito fortes
 - painel visual com dashboard e trilhas de pendencia
 - identificacao visual da versao do cruzador no HTML
+- exibicao, no topo do HTML, da data de atualizacao dos arquivos ativos de `AKD`, `CT2` e `Glossario`
 - analise profunda segregada para investigar candidatos e desenhar novas regras de match
+- na aba `Glossario de contas`, todas as colunas ficam visiveis por padrao e a largura e redistribuida para ocupar toda a grid
 
 ## Observacoes Importantes
 
@@ -256,6 +259,7 @@ Na versao atual, o projeto ja contempla:
 - um registro aparecer em trilha de `sem match` nao significa necessariamente ausencia total de indicio, e sim que ele nao foi escolhido no pareamento final `1x1`
 - a base atual esta sendo trabalhada com recorte filtrado, entao os totais nao devem ser comparados com rodadas antigas sem considerar os filtros de origem
 - excecao: a aba `ORCxCTB` usa um recorte proprio para analise por conta, com `AKD_STATUS = 1`, `AKD_TPSALD IN ('LQ', 'PG', 'AR', 'RB')`, `AKD_ENT05` iniciado por `1`, `3` ou `4`, `CT2_MOEDLC = '01'`, `CT2_TPSALD = '1'` e `CT2_DEBITO` ou `CT2_CREDIT` iniciados por `1`, `3` ou `4`
+- o glossario de contas aceita tanto a estrutura antiga com `CT1_CONTA` quanto a nova com `ZL_ITEMORC`; ambas sao exibidas na aba de glossario como `Conta`
 
 ## Proximos Passos Sugeridos
 
