@@ -1,5 +1,35 @@
 # Credenciais locais
 config/oracle.json
+config/*.local.json
+config/*secret*.json
+config/*credential*.json
+config/*password*.json
+*.local.json
+*secret*
+*segredo*
+*credential*
+*password*
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+*.cer
+*.crt
+*.der
+*.jks
+*.keystore
+wallet/
+Wallet_*/
+cwallet.sso
+ewallet.p12
+tnsnames.ora
+sqlnet.ora
+ojdbc.properties
+*.kdb
+*.sth
 
 # Python/cache
 __pycache__/

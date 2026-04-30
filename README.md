@@ -1,291 +1,349 @@
-# Cruzador AKDXCT2
+# Cruzador AKD x CT2
 
-Projeto para conciliacao e cruzamento de lancamentos entre as bases `AKD` e `CT2`, com foco em ambiente `Protheus`, usando `Python` e saida analitica em `CSV`, `JSON` e `HTML`.
+**Desenvolvedor:** Leonel Diniz  
+**Última atualização da documentação:** 30/04/2026  
+**Ambiente-alvo:** Protheus, Oracle e Python
 
-## Finalidade
+## Visão Geral
 
-Identificar o maior numero possivel de correspondencias entre registros da `AKD` e da `CT2`, mesmo quando nao existe uma chave unica explicita de cruzamento.
+O Cruzador AKD x CT2 é uma solução de apoio à conciliação contábil e orçamentária entre registros das bases `AKD` e `CT2` do Protheus.
 
-O reconciliador trabalha com:
-- regras documentais
-- comparacao por valor e competencia
-- similaridade de historico
-- contas, centro de custo, classe de valor e item contabil
-- documentos extraidos do historico
-- regras especificas de ligacao entre campos tecnicos das bases
+O projeto identifica correspondências entre lançamentos mesmo quando não existe uma chave única explícita. Para isso, combina regras documentais, valor, competência, histórico, contas, centro de custo, classe de valor, item contábil e sinais técnicos extraídos dos campos das bases.
 
-## Estrutura
+O resultado principal é um relatório HTML navegável, complementado por arquivos CSV e JSON de apoio para análise e auditoria.
 
-- `dados/brutos/`
-- `dados/referencia/`
-- `docs/`
-- `scripts/`
-- `saida/`
+## Público-Alvo
 
-Arquivos principais:
-- `scripts/gerar_relatorio_conciliacao_akd_ct2.py`
-- `scripts/atualizar_csvs_brutos_oracle.py`
-- `scripts/validar_sql_somente_leitura.py`
+Esta documentação atende três perfis:
+
+- **Gestores:** visão objetiva do propósito, resultados e cuidados operacionais.
+- **Usuários de negócio:** entendimento das entradas, saídas e leitura do relatório.
+- **Equipe técnica:** execução, manutenção, segurança e atualização dos dados.
+
+## Objetivo do Projeto
+
+O objetivo é reduzir o esforço manual de análise entre AKD e CT2, oferecendo uma trilha estruturada de evidências para:
+
+- localizar matches fortes entre lançamentos;
+- destacar registros ainda sem correspondência final;
+- apoiar a investigação de divergências;
+- evidenciar grupos potenciais `1xN` e `Nx1`;
+- consolidar informações em um relatório de consulta prática.
+
+## Principais Entregas
+
+- Relatório HTML em `saida/relatorio_conciliacao.html`.
+- Resumo executivo e técnico em `saida/resumo_analise.json`.
+- Bases auxiliares em CSV para auditoria dos matches e pendências.
+- Atualização automática dos CSVs brutos a partir do Oracle, sempre em modo somente leitura.
+- Proteções para evitar versionamento de credenciais, backups, artefatos ADVPL e arquivos gerados.
+
+## Estrutura do Projeto
+
+```text
+projeto-cruzador/
+  config/
+    oracle.example.json
+  dados/
+    brutos/
+      DADOS-AKD010.csv
+      DADOS-CT2010.csv
+      GLOSSARIO-CONTAS.csv
+    referencia/
+      DICIONARIO.csv
+  scripts/
+    atualizar_csvs_brutos_oracle.py
+    gerar_relatorio_conciliacao_akd_ct2.py
+    validar_sql_somente_leitura.py
+  sql/
+    AKD010.sql
+    CT2010.sql
+    GLOSSARIO-CONTAS.sql
+  .githooks/
+    pre-commit
+    verificar_credenciais_pre_commit.py
+  README.md
+  requirements.txt
+```
+
+Arquivos e pastas como `saida/`, `docs/`, `.vscode/`, backups, logs, credenciais reais e artefatos ADVPL não devem ser enviados ao Git.
+
+## Entradas
+
+O relatório usa os seguintes arquivos:
+
+- `dados/brutos/DADOS-AKD010.csv`
+- `dados/brutos/DADOS-CT2010.csv`
+- `dados/brutos/GLOSSARIO-CONTAS.csv`
+- `dados/referencia/DICIONARIO.csv`
+
+Os CSVs brutos podem ser atualizados por consulta Oracle usando as queries localizadas em:
+
 - `sql/AKD010.sql`
 - `sql/CT2010.sql`
 - `sql/GLOSSARIO-CONTAS.sql`
 
-## Entradas
+## Saídas
 
-Arquivos esperados em `dados/brutos/`:
-- `DADOS-AKD010.csv`
-- `DADOS-CT2010.csv`
-- `GLOSSARIO-CONTAS.csv` ou `GLOSSARIO-CONTAS.xlsx`
+Os arquivos gerados ficam em `saida/`.
 
-Arquivos de referencia em `dados/referencia/`:
-- `DICIONARIO.csv`
+Principais saídas:
 
-## Filtros De Origem
+- `relatorio_conciliacao.html`: relatório principal para navegação e análise.
+- `resumo_analise.json`: resumo da execução e indicadores principais.
+- `matches_linha_a_linha.csv`: matches selecionados.
+- `comparativo_conciliacao.csv`: comparativo detalhado AKD x CT2.
+- `akd_sem_match.csv`: registros AKD sem match final.
+- `ct2_sem_match.csv`: registros CT2 sem match final.
+- `grupos_match_potenciais.csv`: indícios de grupos `1xN` e `Nx1`.
+- `overlap_xdoc.csv`, `overlap_xdoc_at01cr.csv`, `overlap_xnumap.csv`: sobreposições documentais.
 
-Antes do cruzamento, o script filtra os dados com estas regras:
+A pasta `saida/` é gerada localmente e não deve ser versionada.
+
+## Regras de Filtro
+
+Antes do cruzamento, os dados são filtrados para manter apenas os registros relevantes.
+
+### AKD
+
+- `AKD_TPSALD IN ('LQ', 'PG', 'AR', 'RB')`
 
 ### CT2
+
 - `CT2_MOEDLC = '01'`
 - `CT2_DC IN ('1', '2')`
 
-### AKD
-- `AKD_TPSALD IN ('LQ', 'PG', 'AR', 'RB')`
+Algumas abas do relatório usam recortes próprios, como a análise `CTBxORC DET`, que compara contas de referência e contas contábeis com filtros específicos de status, saldo, moeda e natureza da conta.
 
-## Regras De Cruzamento
+## Lógica de Cruzamento
 
-As principais ancoras do reconciliador sao:
+O reconciliador utiliza uma combinação de âncoras e reforços de score.
 
-1. `AKD_XDOC = CT2_XDOC`
-2. `AKD_XDOC = CT2_AT01CR`
-3. `AKD_XNUMAP = CT2_XDOCUM`
-4. `AKD_XDOC` no formato `CT2<recno>` apontando para `CT2.R_E_C_N_O_`
-5. `AKD_CHAVE` x `CT2_KEY` por tokens estruturados e alfanumericos extraidos das chaves compostas
-6. para `AKD_PROCES IN (900013, 900025, 900026)`, `AKD_HIST = CT2_HIST` com `data exata + valor igual` como ancora textual forte
-7. para `AKD_PROCES = 900027`, token de `10` digitos apos `RI:` em `AKD_HIST` e `CT2_HIST` com `data exata + valor igual`
-8. `documentos extraidos do historico` com filtro de qualidade e controle de frequencia
-9. `competencia + valor`
-10. `documentos extraidos de historico e campos auxiliares`
+Principais âncoras:
 
-## Extracao Avancada De Documento
+- `AKD_XDOC = CT2_XDOC`
+- `AKD_XDOC = CT2_AT01CR`
+- `AKD_XNUMAP = CT2_XDOCUM`
+- `AKD_XDOC` no formato `CT2<recno>` apontando para `CT2.R_E_C_N_O_`
+- tokens estruturados entre `AKD_CHAVE` e `CT2_KEY`
+- histórico igual com data e valor para processos específicos
+- token `RI:` com data e valor para o processo `900027`
+- competência e valor
+- documentos extraídos do histórico e de campos auxiliares
 
-O script extrai e normaliza documentos presentes em campos como:
+Reforços considerados:
 
-### AKD
-- `AKD_XDOC`
-- `AKD_XNUMAP`
-- `AKD_CHAVE`
-- `AKD_IDREF`
-- `AKD_XHISTO`
-- `AKD_HIST`
+- mesma competência;
+- mesma data;
+- mesmo valor;
+- mesma conta;
+- mesmo centro de custo;
+- mesma classe de valor;
+- mesmo item contábil;
+- similaridade textual do histórico;
+- documentos qualificados extraídos do histórico;
+- combinações entre documento, competência, conta, centro de custo e classe.
 
-### CT2
-- `CT2_XDOC`
-- `CT2_AT01CR`
-- `CT2_XDOCUM`
-- `CT2_XNUMCT`
-- `CT2_DOC`
-- `CT2_KEY`
-- `CT2_HIST`
+O pareamento final é feito de forma controlada para evitar escolhas duplicadas indevidas. Quando existem evidências fortes, mas disputa entre múltiplos registros, o caso pode aparecer em `grupos_match_potenciais.csv`.
 
-Padroes considerados:
-- `DOC`
-- `DOC N`
-- `REF DOC`
-- `NF`
-- `AP`
-- `NR`
-- prefixos como `SE`, `SF`, `AK`, `SEU`, `FFC`, `RFB`
-- variantes com e sem zeros a esquerda
+## Relatório HTML
 
-Filtros adicionais para documentos vindos de historico:
-- descarte de tokens genericos, datas soltas e identificadores muito curtos
-- priorizacao de documentos com perfil de identificador real, como tracking, referencia fiscal e numero documental mais longo
-- bloqueio de documentos excessivamente frequentes para reduzir falso positivo em massa
+O relatório principal é `saida/relatorio_conciliacao.html`.
 
-## Reforcos De Score
+Ele inclui:
 
-O score do match pode ser reforcado por:
-- documento igual
-- documento AKD igual ao `CT2_AT01CR`
-- numero AP igual
-- historico exato com `data exata + valor igual` quando `AKD_PROCES IN (900013, 900025, 900026)`
-- token `RI:` com `data exata + valor igual` quando `AKD_PROCES = 900027`
-- ligacao `AKD_XDOC -> RECNO CT2`
-- token estruturado entre `AKD_CHAVE` e `CT2_KEY`
-- documento qualificado extraido do historico
-- mesma competencia
-- mesma data exata
-- mesma conta
-- mesmo centro de custo
-- mesma classe de valor
-- mesmo item contabil
-- combinacao `competencia + conta + CC`
-- combinacao `competencia + classe de valor`
-- combinacao `competencia + conta + classe de valor`
-- combinacao `competencia + CC + classe de valor`
-- evidencias documentais extraidas do historico combinadas com `competencia`, `conta`, `CC` e `classe`
-- evidencias documentais extraidas do historico combinadas com `data exata`, `conta` e `valor`
-- evidencias por chave estruturada combinadas com `competencia`, `conta` e `classe`
-- tokens em comum no historico
-- similaridade textual do historico
-- reforco textual para casos sem ancora documental explicita, quando `texto`, `competencia`, `conta` ou `classe` convergem
-
-## Saidas
-
-Arquivos gerados em `saida/`:
-- `matches_linha_a_linha.csv`
-- `comparativo_conciliacao.csv`
-- `resumo_analise.json`
-- `overlap_xdoc.csv`
-- `overlap_xdoc_at01cr.csv`
-- `overlap_xnumap.csv`
-- `akd_sem_match.csv`
-- `ct2_sem_match.csv`
-- `grupos_match_potenciais.csv`
-- `relatorio_conciliacao.html`
-
-## Relatorio HTML
-
-O arquivo `saida/relatorio_conciliacao.html` possui:
-- aba `Dashboard`
-- aba `Matches`
-- aba `AKD pura`
-- aba `CT2 pura`
-- aba `AKD sem match`
-- aba `CT2 sem match`
-- icones visuais pertinentes em todas as abas para facilitar a navegacao
-- aba `CTBxORC DET` como ultima aba do relatorio, com icone visual de relatorio, consolidado AKD x CT2 por conta de referencia, descricao da conta consultada no glossario, coluna `Origem` e contas presentes apenas de um lado
-- filtro `Status contas` na aba `CTBxORC DET` para separar contas `ok` de contas `divergente`
-- opcao para recolher ou expandir a secao de filtros no topo do relatorio
-- filtros, busca livre e ordenacao
-- redimensionamento de colunas
-- expansao das colunas de historico
-- indicadores de divergencia de data, valor e conta
-- identificacao de versao no topo com data de atualizacao e link para o commit do Git
+- dashboard executivo;
+- visão de matches;
+- visão AKD;
+- visão CT2;
+- registros AKD sem match;
+- registros CT2 sem match;
+- análise `CTBxORC DET`;
+- glossário de contas;
+- filtros, busca livre, ordenação e redimensionamento de colunas;
+- indicadores visuais de divergência;
+- identificação da versão gerada.
 
 ## Como Executar
 
-No PowerShell, a partir da raiz do projeto:
+Execute os comandos a partir da raiz do projeto.
+
+### 1. Instalar Dependências
+
+```powershell
+python -m pip install -r requirements.txt
+```
+
+### 2. Gerar Relatório com CSVs Locais
 
 ```powershell
 python scripts/gerar_relatorio_conciliacao_akd_ct2.py
 ```
 
-Para consultar diretamente o Oracle em vez dos CSVs:
+### 3. Abrir o Relatório
 
 ```powershell
-python -m pip install -r requirements.txt
-copy .\config\oracle.example.json .\config\oracle.json
-notepad .\config\oracle.json
-python scripts/gerar_relatorio_conciliacao_akd_ct2.py --fonte oracle
+start .\saida\relatorio_conciliacao.html
 ```
 
-Para atualizar a pasta de dados brutos a partir do Oracle:
+## Atualização dos Dados Brutos pelo Oracle
+
+O projeto possui um conector Oracle para atualizar os CSVs brutos.
+
+### Configuração
+
+Copie o exemplo e preencha localmente:
+
+```powershell
+copy .\config\oracle.example.json .\config\oracle.json
+notepad .\config\oracle.json
+```
+
+O arquivo `config/oracle.json` contém credenciais reais e nunca deve ser enviado ao Git.
+
+### Atualizar Todas as Bases
 
 ```powershell
 python scripts/atualizar_csvs_brutos_oracle.py
 ```
 
-O comando acima consulta as queries configuradas em `config/oracle.json` e substitui:
+Esse comando consulta Oracle e substitui:
 
 - `dados/brutos/DADOS-AKD010.csv`
 - `dados/brutos/DADOS-CT2010.csv`
 - `dados/brutos/GLOSSARIO-CONTAS.csv`
 
-Por padrao, os arquivos atuais sao copiados para `dados/brutos/backups/` antes da substituicao. Para atualizar apenas uma base:
+Antes da substituição, os arquivos atuais são copiados para `dados/brutos/backups/`.
+
+### Atualizar Apenas Algumas Bases
 
 ```powershell
 python scripts/atualizar_csvs_brutos_oracle.py --somente akd
 python scripts/atualizar_csvs_brutos_oracle.py --somente ct2 glossario
 ```
 
-O arquivo `config/oracle.json` nao deve ser versionado, pois contem credenciais. As consultas usadas ficam em:
+## Segurança Banco de Dados
 
-- `sql/AKD010.sql`
-- `sql/CT2010.sql`
-- `sql/GLOSSARIO-CONTAS.sql`
+Toda interação com Oracle deve ser exclusivamente de consulta.
 
-### Politica de seguranca Oracle
+O projeto bloqueia qualquer SQL que não seja `SELECT` antes de enviar o comando ao banco. Também são bloqueados comandos múltiplos e palavras-chave que possam alterar dados, estruturas, permissões ou transações.
 
-Toda interacao com o Oracle neste projeto deve ser exclusivamente de leitura.
-Os scripts bloqueiam qualquer SQL que nao seja `SELECT` antes de enviar o
-comando ao banco. Tambem sao recusados comandos multiplos e palavras-chave que
-possam alterar dados, estruturas, permissoes ou transacoes, incluindo `UPDATE`,
-`DELETE`, `INSERT`, `MERGE`, `DROP`, `ALTER`, `CREATE`, `TRUNCATE`, `GRANT`,
-`REVOKE`, `COMMIT`, `ROLLBACK`, `BEGIN`, `DECLARE`, `CALL`, `EXEC` e
-`FOR UPDATE`.
+Comandos bloqueados incluem:
 
-Essa trava fica em `scripts/validar_sql_somente_leitura.py` e e usada tanto pela analise
-com `--fonte oracle` quanto pelo atualizador de `dados/brutos`. Se uma query
-nos arquivos `sql/*.sql` ou em `config/oracle.json` violar essa politica, a
-execucao e interrompida antes da chamada ao Oracle.
+- `UPDATE`
+- `DELETE`
+- `INSERT`
+- `MERGE`
+- `DROP`
+- `ALTER`
+- `CREATE`
+- `TRUNCATE`
+- `GRANT`
+- `REVOKE`
+- `COMMIT`
+- `ROLLBACK`
+- `BEGIN`
+- `DECLARE`
+- `CALL`
+- `EXEC`
+- `FOR UPDATE`
 
-Para abrir o relatorio:
+A validação fica em `scripts/validar_sql_somente_leitura.py` e é usada tanto pelo gerador do relatório quanto pelo atualizador de CSVs brutos.
+
+## Segurança Git e Informações Sensíveis
+
+Nunca versionar:
+
+- senhas;
+- usuários reais de banco;
+- DSNs reais;
+- tokens;
+- chaves privadas;
+- certificados privados;
+- wallets Oracle;
+- arquivos `.env`;
+- `tnsnames.ora`;
+- `sqlnet.ora`;
+- backups;
+- logs;
+- artefatos ADVPL;
+- relatórios e arquivos gerados em `saida/`.
+
+O repositório possui:
+
+- regras no `.gitignore`;
+- hook local de pre-commit em `.githooks/`;
+- scanner de padrões sensíveis em `.githooks/verificar_credenciais_pre_commit.py`.
+
+Para habilitar os hooks em um clone novo:
 
 ```powershell
-start .\saida\relatorio_conciliacao.html
+git config core.hooksPath .githooks
 ```
 
-## Estado Atual
+Antes de commitar, revise:
 
-Totais da rodada atual, conforme `saida/resumo_analise.json`:
-- `AKD`: `2.125`
-- `CT2`: `650`
-- `candidatos_gerados`: `1.177`
-- `matches_selecionados`: `290`
-- `muito_forte`: `283`
-- `forte`: `7`
+```powershell
+git status
+git diff --cached
+```
 
-Na versao atual, o projeto ja contempla:
-- cruzamento documental
-- cruzamento por valor e competencia
-- extracao avancada de documentos
-- extracao qualificada de documento a partir do historico com filtro de frequencia
-- ancora textual exata por historico com `data + valor` para os processos `900013`, `900025` e `900026`
-- ancora por token `RI:` com `data + valor` para o processo `900027`
-- ligacao entre `AKD_XDOC` e `RECNO` da `CT2`
-- cruzamento direto entre `AKD_XDOC` e `CT2_AT01CR`
-- cruzamento por tokens estruturados entre `AKD_CHAVE` e `CT2_KEY`
-- reforco de score para `AKD_XNUMAP -> CT2_XDOCUM` e `AKD_XNUMAP -> CT2_AT04DB`
-- blocos residuais mais amplos por `ano + valor`, `trimestre + valor`, `conta + valor`, `CC + valor` e `classe + valor`
-- reforcos compostos por `documento extra + competencia/conta/CC/classe`
-- reforcos compostos por `documento do historico + data exata/competencia + conta + valor`
-- reforcos compostos por `chave estruturada + competencia/conta/classe`
-- reforco textual para matches sem ancora direta, quando o contexto operacional converge
-- trilha segregada para grupos potenciais `1xN` e `Nx1` quando o `1x1` bloqueia candidatos muito fortes
-- painel visual com dashboard e trilhas de pendencia
-- identificacao visual da versao do cruzador no HTML
-- exibicao, no topo do HTML, da data de atualizacao dos arquivos ativos de `AKD`, `CT2` e `Glossario`
-- na aba `Glossario de contas`, todas as colunas ficam visiveis por padrao e a largura e redistribuida para ocupar toda a grid
+## Governança de Versionamento
 
-## Observacoes Importantes
+Devem ser versionados:
 
-- `RECNO` e `LOTE` nao sao usados como chave direta de conciliacao entre `AKD` e `CT2`
-- o `RECNO` da `CT2` pode ser usado como evidencia indireta quando codificado em `AKD_XDOC`
-- um registro aparecer em trilha de `sem match` nao significa necessariamente ausencia total de indicio, e sim que ele nao foi escolhido no pareamento final `1x1`
-- a base atual esta sendo trabalhada com recorte filtrado, entao os totais nao devem ser comparados com rodadas antigas sem considerar os filtros de origem
-- excecao: a aba `CTBxORC DET` usa um recorte proprio para analise por conta, com `AKD_STATUS = 1`, `AKD_TPSALD IN ('LQ', 'PG', 'AR', 'RB')`, `AKD_ENT05` iniciado por `1`, `3` ou `4`, `CT2_MOEDLC = '01'`, `CT2_TPSALD = '1'` e `CT2_DEBITO` ou `CT2_CREDIT` iniciados por `1`, `3` ou `4`
-- o glossario de contas aceita tanto a estrutura antiga com `CT1_CONTA` quanto a nova com `ZL_ITEMORC`; ambas sao exibidas na aba de glossario como `Conta`
+- código Python essencial para geração do relatório e atualização dos dados;
+- SQLs de consulta;
+- modelo de configuração sem credenciais;
+- requisitos Python;
+- README e registros de revisão da documentação;
+- dados brutos necessários ao relatório, quando aprovados para versionamento.
 
-## Proximos Passos Sugeridos
+Não devem ser versionados:
 
-- integrar `GLOSSARIO-CONTAS.xlsx` como filtro e descricao no relatorio
-- mostrar no HTML quais evidencias sustentaram cada match
-- criar trilha especifica para conflitos `Nx1`
-- evoluir reconciliacao por grupo `1xN` e `NxN`
+- credenciais;
+- backups;
+- logs;
+- saídas geradas;
+- arquivos ADVPL;
+- configurações locais de IDE;
+- documentação auxiliar sem dependência direta da entrega;
+- arquivos com informação sensível ou operacional restrita.
 
-## Grupos Potenciais 1xN E Nx1
+## Estado Atual da Última Execução
 
-O reconciliador principal continua fechando a conciliacao oficial em `1x1`, mas agora tambem exporta a trilha `saida/grupos_match_potenciais.csv`.
+Última execução registrada localmente:
 
-Essa trilha destaca casos em que:
-- existe evidencia muito forte de match
-- ha ancora documental ou estrutural
-- o contexto contabil tambem converge
-- mas o pareamento final bloqueia o caso por disputa entre dois ou mais registros
+- AKD filtrado: `2.125` linhas
+- CT2 filtrado: `650` linhas
+- candidatos gerados: `1.177`
+- matches selecionados: `290`
+- matches muito fortes: `283`
+- matches fortes: `7`
+- grupos potenciais: `536`
 
-Os tipos atuais sao:
-- `akd_1xN`: um registro AKD com multiplos CT2 muito fortes
-- `ct2_Nx1`: um registro CT2 com multiplos AKD muito fortes
+Esses números dependem do recorte de dados vigente e não devem ser comparados com execuções anteriores sem verificar filtros, período e origem dos arquivos.
 
-Essa saida foi criada para apoiar a futura implementacao de reconciliacao por grupo sem perder a seguranca do fluxo `1x1`.
+## Observações Importantes
+
+- `RECNO` e `LOTE` não são usados como chave direta de conciliação entre AKD e CT2.
+- `RECNO` da CT2 pode ser usado como evidência indireta quando codificado em `AKD_XDOC`.
+- Um registro em trilha de sem match não significa ausência total de evidência; significa apenas que ele não foi escolhido no pareamento final `1x1`.
+- O glossário aceita estrutura antiga com `CT1_CONTA` e estrutura nova com `ZL_ITEMORC`.
+- O relatório é uma ferramenta de apoio à análise; a validação contábil final continua sendo responsabilidade da área usuária.
+
+## Manutenção
+
+Ao revisar ou atualizar a documentação:
+
+1. Atualize a data no cabeçalho deste README.
+2. Registre a alteração em `REVISOES_DOCUMENTACAO.md`.
+3. Verifique se os comandos documentados ainda funcionam.
+4. Confirme que não há credenciais ou dados sensíveis no conteúdo.
+
+## Próximos Passos Sugeridos
+
+- Exibir no HTML as evidências completas que sustentaram cada match.
+- Criar trilha específica para conflitos `Nx1`.
+- Evoluir a conciliação por grupo `1xN` e `NxN`.
+- Avaliar mascaramento ou redução dos CSVs brutos caso exista risco de exposição de dados sensíveis.

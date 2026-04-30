@@ -1,0 +1,16 @@
+#!/bin/sh
+if command -v python >/dev/null 2>&1; then
+  exec python .githooks/verificar_credenciais_pre_commit.py
+fi
+
+if command -v py >/dev/null 2>&1; then
+  exec py .githooks/verificar_credenciais_pre_commit.py
+fi
+
+LOCAL_PYTHON="$LOCALAPPDATA/Programs/Python/Python314/python.exe"
+if [ -x "$LOCAL_PYTHON" ]; then
+  exec "$LOCAL_PYTHON" .githooks/verificar_credenciais_pre_commit.py
+fi
+
+echo "Commit bloqueado: Python nao encontrado para executar o scanner de segredos." >&2
+exit 1
