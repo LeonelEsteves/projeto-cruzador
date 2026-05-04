@@ -53,7 +53,9 @@ projeto-cruzador/
       DICIONARIO.csv
   scripts/
     atualizar_csvs_brutos_oracle.py
+    descobrir_chaves_candidatas_akd_ct2.py
     gerar_relatorio_conciliacao_akd_ct2.py
+    investigar_matches_sem_conciliacao_akd_ct2.py
     validar_sql_somente_leitura.py
   sql/
     AKD010.sql
@@ -66,7 +68,7 @@ projeto-cruzador/
   requirements.txt
 ```
 
-Arquivos e pastas como `saida/`, `docs/`, `.vscode/`, backups, logs, credenciais reais e artefatos ADVPL não devem ser enviados ao Git.
+Arquivos e pastas como `docs/`, `.vscode/`, backups, logs, credenciais reais e artefatos ADVPL não devem ser enviados ao Git. A pasta `saida/` é parcialmente versionada; arquivos grandes demais para o GitHub devem ser regenerados localmente.
 
 ## Entradas
 
@@ -103,7 +105,11 @@ Principais saídas:
 - `saida/relatorio_conciliacao/overlap_xdoc.csv`, `saida/relatorio_conciliacao/overlap_xdoc_at01cr.csv`, `saida/relatorio_conciliacao/overlap_xnumap.csv`: sobreposições documentais.
 - `saida/descoberta_matches/`: arquivos auxiliares dos scripts de descoberta de novas regras de match.
 
-A pasta `saida/` é gerada localmente e não deve ser versionada.
+A pasta `saida/` é parcialmente versionada para facilitar auditoria após clone. Por limite do GitHub, os arquivos abaixo não são versionados e devem ser recriados com `python scripts/gerar_relatorio_conciliacao_akd_ct2.py`:
+
+- `saida/relatorio_conciliacao/relatorio_conciliacao.html`;
+- `saida/relatorio_conciliacao/matches_por_insights.csv`;
+- `saida/descoberta_matches/candidatos_match_detalhados.csv`.
 
 ## Regras de Filtro
 
@@ -194,6 +200,12 @@ python scripts/gerar_relatorio_conciliacao_akd_ct2.py
 ```
 
 ### 3. Abrir o Relatório
+
+Se o clone veio sem `saida/relatorio_conciliacao/relatorio_conciliacao.html`, gere o relatório antes de abrir:
+
+```powershell
+python scripts/gerar_relatorio_conciliacao_akd_ct2.py
+```
 
 ```powershell
 start .\saida\relatorio_conciliacao\relatorio_conciliacao.html
@@ -311,7 +323,7 @@ Nunca versionar:
 - backups;
 - logs;
 - artefatos ADVPL;
-- relatórios e arquivos gerados em `saida/`.
+- arquivos grandes ou locais gerados em `saida/` que estejam listados no `.gitignore`.
 
 O repositório possui:
 
@@ -348,7 +360,7 @@ Não devem ser versionados:
 - credenciais;
 - backups;
 - logs;
-- saídas geradas;
+- saídas grandes ou locais listadas no `.gitignore`;
 - arquivos ADVPL;
 - configurações locais de IDE;
 - documentação auxiliar sem dependência direta da entrega;
@@ -358,13 +370,14 @@ Não devem ser versionados:
 
 Última execução registrada localmente:
 
-- AKD filtrado: `2.125` linhas
-- CT2 filtrado: `650` linhas
-- candidatos gerados: `1.177`
-- matches selecionados: `290`
-- matches muito fortes: `283`
-- matches fortes: `7`
-- grupos potenciais: `536`
+- AKD filtrado: `20.341` linhas
+- CT2 filtrado: `27.945` linhas
+- candidatos gerados: `261.412`
+- matches selecionados: `9.856`
+- matches muito fortes: `9.385`
+- matches fortes: `285`
+- matches prováveis: `186`
+- grupos potenciais: `13.655`
 
 Esses números dependem do recorte de dados vigente e não devem ser comparados com execuções anteriores sem verificar filtros, período e origem dos arquivos.
 

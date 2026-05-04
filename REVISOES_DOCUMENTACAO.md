@@ -13,6 +13,7 @@ Este arquivo deve ser atualizado sempre que a documentação do projeto for revi
 - Registro da separação entre artefatos do relatório e artefatos de descoberta de novos matches.
 - Documentação dos reforços de score derivados dos insights de chaves candidatas.
 - Inclusão dos arquivos `top_candidatos_*` e `hipoteses_novas_regras.csv` como saídas do match principal.
+- Ajuste das instruções para clone novo, regeneração do HTML final e versionamento parcial da pasta `saida/`.
 
 ## 30/04/2026
 
