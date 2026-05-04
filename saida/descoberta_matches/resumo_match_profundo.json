@@ -1,0 +1,31 @@
+{
+  "arquivos": {
+    "akd": "DADOS-AKD010.csv",
+    "ct2": "DADOS-CT2010.csv"
+  },
+  "parametros": {
+    "modo": "amplo",
+    "top": 5,
+    "limite_grupo_valor": 800
+  },
+  "totais": {
+    "akd_pos_filtro": 20341,
+    "ct2_pos_filtro": 27945,
+    "candidatos_match": 261412,
+    "matches_selecionados": 9856,
+    "akd_sem_match_final": 10485,
+    "ct2_sem_match_final": 18089
+  },
+  "saida": {
+    "candidatos_match_detalhados": "saida/descoberta_matches/candidatos_match_detalhados.csv",
+    "assinaturas_evidencia": "saida/descoberta_matches/assinaturas_evidencia.csv",
+    "correlacao_campos_match": "saida/descoberta_matches/correlacao_campos_match.csv",
+    "origens_candidatos": "saida/descoberta_matches/origens_candidatos.csv",
+    "campos_prioritarios_akd": "saida/descoberta_matches/campos_prioritarios_akd.csv",
+    "campos_prioritarios_ct2": "saida/descoberta_matches/campos_prioritarios_ct2.csv",
+    "sobreposicao_campos_cruzados": "saida/descoberta_matches/sobreposicao_campos_cruzados.csv",
+    "top_candidatos_akd_sem_match": "saida/descoberta_matches/top_candidatos_akd_sem_match.csv",
+    "top_candidatos_ct2_sem_match": "saida/descoberta_matches/top_candidatos_ct2_sem_match.csv",
+    "hipoteses_novas_regras": "saida/descoberta_matches/hipoteses_novas_regras.csv"
+  }
+}
