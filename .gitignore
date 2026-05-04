@@ -63,8 +63,12 @@ debug.log
 dados/brutos/backups/
 
 # Arquivos gerados que nao sao fonte direta do relatorio
-saida/
+saida/*
 !saida/.gitkeep
+!saida/relatorio_conciliacao/
+!saida/relatorio_conciliacao/**
+saida/relatorio_conciliacao/relatorio_conciliacao.html
+saida/relatorio_conciliacao/matches_por_insights.csv
 
 # Materiais auxiliares que nao sao dependencia direta do relatorio
 docs/

@@ -1,0 +1,68 @@
+{
+  "arquivos": {
+    "akd": "DADOS-AKD010.csv",
+    "ct2": "DADOS-CT2010.csv"
+  },
+  "linhas": {
+    "akd": 20341,
+    "ct2": 27945
+  },
+  "sobreposicao_documental": {
+    "akd_xdoc__ct2_xdoc": {
+      "keys_em_comum": 1682,
+      "status": {
+        "ambiguo": 1490,
+        "forte_grupo": 192
+      }
+    },
+    "akd_xdoc__ct2_at01cr": {
+      "keys_em_comum": 1682,
+      "status": {
+        "ambiguo": 1490,
+        "forte_grupo": 192
+      }
+    },
+    "akd_xnumap__ct2_xdocum": {
+      "keys_em_comum": 1667,
+      "status": {
+        "ambiguo": 1593,
+        "forte_grupo": 74
+      }
+    }
+  },
+  "assinatura_residual": {
+    "akd_distinct_month_value": 9677,
+    "ct2_distinct_month_value": 14512,
+    "overlap_month_value": 5720
+  },
+  "reconciliacao_linha_a_linha": {
+    "candidatos_gerados": 261412,
+    "matches_selecionados": 9856,
+    "por_confianca": {
+      "muito_forte": 9385,
+      "forte": 285,
+      "provavel": 186
+    },
+    "matches_com_insights": 6579,
+    "candidatos_com_insights": 162845,
+    "top_candidatos_akd_sem_match": 4951,
+    "top_candidatos_ct2_sem_match": 7050,
+    "hipoteses_novas_regras": 4,
+    "grupos_match_potenciais": 13655,
+    "arquivo_grupos_potenciais": "saida/relatorio_conciliacao/grupos_match_potenciais.csv",
+    "arquivo_comparativo": "saida/relatorio_conciliacao/comparativo_conciliacao.csv",
+    "arquivo_matches_por_insights": "saida/relatorio_conciliacao/matches_por_insights.csv",
+    "arquivo_top_candidatos_akd_sem_match": "saida/relatorio_conciliacao/top_candidatos_akd_sem_match.csv",
+    "arquivo_top_candidatos_ct2_sem_match": "saida/relatorio_conciliacao/top_candidatos_ct2_sem_match.csv",
+    "arquivo_hipoteses_novas_regras": "saida/relatorio_conciliacao/hipoteses_novas_regras.csv",
+    "arquivo_html": "saida/relatorio_conciliacao/relatorio_conciliacao.html"
+  },
+  "recomendacao": [
+    "Priorizar match por AKD_XDOC = CT2_XDOC.",
+    "Usar AKD_XDOC = CT2_AT01CR como ancora documental complementar.",
+    "Usar AKD_XNUMAP = CT2_XDOCUM como segunda camada.",
+    "Usar competencia + valor como bloco residual para limitar candidatos.",
+    "Reforcar score com similaridade de texto e com coincidencia de conta em AKD_ENT05.",
+    "Selecionar apenas um melhor candidato por linha com score auditavel."
+  ]
+}
