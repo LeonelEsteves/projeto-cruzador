@@ -93,6 +93,9 @@ Principais saídas:
 - `saida/relatorio_conciliacao/resumo_analise.json`: resumo da execução e indicadores principais.
 - `saida/relatorio_conciliacao/matches_linha_a_linha.csv`: matches selecionados.
 - `saida/relatorio_conciliacao/matches_por_insights.csv`: trilha dos pares gerados pelos reforços derivados da descoberta de chaves candidatas.
+- `saida/relatorio_conciliacao/top_candidatos_akd_sem_match.csv`: melhores candidatos CT2 para cada AKD que ficou sem match final.
+- `saida/relatorio_conciliacao/top_candidatos_ct2_sem_match.csv`: melhores candidatos AKD para cada CT2 que ficou sem match final.
+- `saida/relatorio_conciliacao/hipoteses_novas_regras.csv`: hipóteses recorrentes de novas regras geradas a partir dos candidatos não selecionados.
 - `saida/relatorio_conciliacao/comparativo_conciliacao.csv`: comparativo detalhado AKD x CT2.
 - `saida/relatorio_conciliacao/akd_sem_match.csv`: registros AKD sem match final.
 - `saida/relatorio_conciliacao/ct2_sem_match.csv`: registros CT2 sem match final.

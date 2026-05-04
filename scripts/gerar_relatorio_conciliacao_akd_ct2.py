@@ -1826,6 +1826,98 @@ def select_best_matches(candidates: list[CandidateMatch]) -> list[CandidateMatch
     return selected
 
 
+def normalize_candidate_reason(reason: str) -> str:
+    base = reason.split(":", 1)[0]
+    if base.startswith("chave_estruturada_"):
+        return "chave_estruturada"
+    if base.startswith("doc_extra_"):
+        return "doc_extra"
+    if base.startswith("doc_hist_"):
+        return "doc_hist"
+    if base.startswith("tokens_"):
+        return "tokens"
+    if base.startswith("texto_"):
+        return "texto"
+    return base
+
+
+def candidate_reason_signature(reasons: str) -> str:
+    parts = {normalize_candidate_reason(item) for item in reasons.split("|") if item}
+    return "|".join(sorted(parts))
+
+
+def classify_candidate_status(
+    candidate: CandidateMatch,
+    selected_akd: set[str],
+    selected_ct2: set[str],
+    selected_pairs: set[tuple[str, str]],
+) -> str:
+    pair = (candidate.akd_recno, candidate.ct2_recno)
+    if pair in selected_pairs:
+        return "selecionado_final"
+    if candidate.akd_recno in selected_akd and candidate.ct2_recno in selected_ct2:
+        return "nao_selecionado_akd_e_ct2_ja_usados"
+    if candidate.akd_recno in selected_akd:
+        return "nao_selecionado_akd_ja_usado"
+    if candidate.ct2_recno in selected_ct2:
+        return "nao_selecionado_ct2_ja_usado"
+    return "nao_selecionado_disponivel"
+
+
+def candidate_sources_from_reasons(candidate: CandidateMatch) -> str:
+    reasons = set(candidate.reasons.split("|"))
+    sources: set[str] = set()
+    if {"xdoc", "xdoc_at01cr", "akd_xdoc_ct2_recno"} & reasons:
+        sources.add("documento_direto")
+    if {"xnumap_xdocum", "xnumap_at04db"} & reasons:
+        sources.add("ap_documental")
+    if "competencia" in reasons:
+        sources.add("competencia_valor")
+    if "ent05_conta" in reasons:
+        sources.add("conta_valor")
+    if "cc" in reasons:
+        sources.add("cc_valor")
+    if "classe_valor" in reasons:
+        sources.add("classe_valor")
+    if any(reason.startswith("insight_") for reason in reasons):
+        sources.add("insights_chaves_candidatas")
+    if any(reason.startswith(("doc_extra_", "doc_hist_", "chave_estruturada_")) for reason in reasons):
+        sources.add("tokens_documentais")
+    if any(reason.startswith(("texto_", "tokens_")) for reason in reasons):
+        sources.add("texto_tokens")
+    return "|".join(sorted(sources or {"motor_principal"}))
+
+
+def build_hypothesis_rows(candidates: list[CandidateMatch]) -> list[dict[str, object]]:
+    hypotheses: Counter[str] = Counter()
+    for candidate in candidates:
+        reason_set = set(candidate_reason_signature(candidate.reasons).split("|"))
+        sources = set(candidate_sources_from_reasons(candidate).split("|"))
+        if {"competencia", "ent05_conta", "cc"} <= reason_set and "xdoc" not in reason_set:
+            hypotheses["competencia_conta_cc_sem_xdoc"] += 1
+        if {"competencia", "tokens", "texto"} <= reason_set and "doc_extra" not in reason_set:
+            hypotheses["texto_e_tokens_sem_documento_expresso"] += 1
+        if "conta_valor" in sources and "ent05_conta" not in reason_set:
+            hypotheses["mesmo_valor_mesma_conta_sem_regra_explicita"] += 1
+        if "cc_valor" in sources and "cc" not in reason_set:
+            hypotheses["mesmo_valor_mesmo_cc_sem_regra_explicita"] += 1
+        if "competencia_valor" in sources and candidate.text_similarity >= 0.70 and not (
+            {"xdoc", "xdoc_at01cr", "xnumap_xdocum", "xnumap_at04db"} & reason_set
+        ):
+            hypotheses["valor_competencia_com_texto_semelhante"] += 1
+        if "insights_chaves_candidatas" in sources and "xdoc" not in reason_set:
+            hypotheses["insight_chave_candidata_sem_xdoc"] += 1
+    return [{"hipotese_regra": key, "ocorrencias": value} for key, value in hypotheses.most_common()]
+
+
+def write_dict_rows(path: Path, rows: list[dict[str, object]]) -> None:
+    fieldnames = list(rows[0].keys()) if rows else ["vazio"]
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames, delimiter=";")
+        writer.writeheader()
+        writer.writerows(rows)
+
+
 def export_row_matches(
     akd_rows: list[dict[str, str]],
     ct2_rows: list[dict[str, str]],
@@ -1843,6 +1935,7 @@ def export_row_matches(
     selected = select_best_matches(candidates)
     selected_akd = {item.akd_recno for item in selected}
     selected_ct2 = {item.ct2_recno for item in selected}
+    selected_pairs = {(item.akd_recno, item.ct2_recno) for item in selected}
     grouped_suggestions = build_group_match_suggestions(candidates, selected)
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -1920,7 +2013,6 @@ def export_row_matches(
                 ]
             )
 
-    selected_pairs = {(item.akd_recno, item.ct2_recno) for item in selected}
     insight_candidates = [item for item in candidates if "insight_" in item.reasons]
     insight_path = OUTPUT_DIR / "matches_por_insights.csv"
     log_step("Gerando trilha de matches por insights")
@@ -1985,6 +2077,92 @@ def export_row_matches(
                     f"{normalize_decimal(ct2_row.get('CT2_VALOR', '')) or Decimal('0.00'):.2f}",
                 ]
             )
+
+    by_akd: dict[str, list[CandidateMatch]] = defaultdict(list)
+    by_ct2: dict[str, list[CandidateMatch]] = defaultdict(list)
+    for item in candidates:
+        by_akd[item.akd_recno].append(item)
+        by_ct2[item.ct2_recno].append(item)
+    for items in by_akd.values():
+        items.sort(key=lambda value: (value.score, value.token_overlap, value.text_similarity), reverse=True)
+    for items in by_ct2.values():
+        items.sort(key=lambda value: (value.score, value.token_overlap, value.text_similarity), reverse=True)
+
+    top_akd_rows: list[dict[str, object]] = []
+    for akd_recno, items in sorted(by_akd.items()):
+        if akd_recno in selected_akd:
+            continue
+        akd_row = akd_map[akd_recno]
+        for rank, item in enumerate(items[:5], start=1):
+            ct2_row = ct2_map[item.ct2_recno]
+            top_akd_rows.append(
+                {
+                    "akd_recno": akd_recno,
+                    "rank": rank,
+                    "ct2_recno_candidato": item.ct2_recno,
+                    "status_candidato": classify_candidate_status(item, selected_akd, selected_ct2, selected_pairs),
+                    "confidence": item.confidence,
+                    "score": item.score,
+                    "candidate_sources": candidate_sources_from_reasons(item),
+                    "reason_signature": candidate_reason_signature(item.reasons),
+                    "reasons": item.reasons,
+                    "akd_xdoc": clean(akd_row.get("AKD_XDOC", "")),
+                    "akd_xnumap": clean(akd_row.get("AKD_XNUMAP", "")),
+                    "akd_ent05": clean(akd_row.get("AKD_ENT05", "")),
+                    "akd_cc": clean(akd_row.get("AKD_CC", "")),
+                    "akd_clvlr": clean(akd_row.get("AKD_CLVLR", "")),
+                    "ct2_xdoc": clean(ct2_row.get("CT2_XDOC", "")),
+                    "ct2_at01cr": clean(ct2_row.get("CT2_AT01CR", "")),
+                    "ct2_xdocum": clean(ct2_row.get("CT2_XDOCUM", "")),
+                    "ct2_at04db": clean(ct2_row.get("CT2_AT04DB", "")),
+                    "ct2_debito": clean(ct2_row.get("CT2_DEBITO", "")),
+                    "ct2_credito": clean(ct2_row.get("CT2_CREDIT", "")),
+                    "akd_historico": row_text_akd(akd_row),
+                    "ct2_historico": row_text_ct2(ct2_row),
+                }
+            )
+
+    top_ct2_rows: list[dict[str, object]] = []
+    for ct2_recno, items in sorted(by_ct2.items()):
+        if ct2_recno in selected_ct2:
+            continue
+        ct2_row = ct2_map[ct2_recno]
+        for rank, item in enumerate(items[:5], start=1):
+            akd_row = akd_map[item.akd_recno]
+            top_ct2_rows.append(
+                {
+                    "ct2_recno": ct2_recno,
+                    "rank": rank,
+                    "akd_recno_candidato": item.akd_recno,
+                    "status_candidato": classify_candidate_status(item, selected_akd, selected_ct2, selected_pairs),
+                    "confidence": item.confidence,
+                    "score": item.score,
+                    "candidate_sources": candidate_sources_from_reasons(item),
+                    "reason_signature": candidate_reason_signature(item.reasons),
+                    "reasons": item.reasons,
+                    "ct2_xdoc": clean(ct2_row.get("CT2_XDOC", "")),
+                    "ct2_at01cr": clean(ct2_row.get("CT2_AT01CR", "")),
+                    "ct2_xdocum": clean(ct2_row.get("CT2_XDOCUM", "")),
+                    "ct2_at04db": clean(ct2_row.get("CT2_AT04DB", "")),
+                    "ct2_debito": clean(ct2_row.get("CT2_DEBITO", "")),
+                    "ct2_credito": clean(ct2_row.get("CT2_CREDIT", "")),
+                    "akd_xdoc": clean(akd_row.get("AKD_XDOC", "")),
+                    "akd_xnumap": clean(akd_row.get("AKD_XNUMAP", "")),
+                    "akd_ent05": clean(akd_row.get("AKD_ENT05", "")),
+                    "akd_cc": clean(akd_row.get("AKD_CC", "")),
+                    "akd_historico": row_text_akd(akd_row),
+                    "ct2_historico": row_text_ct2(ct2_row),
+                }
+            )
+
+    top_akd_path = OUTPUT_DIR / "top_candidatos_akd_sem_match.csv"
+    top_ct2_path = OUTPUT_DIR / "top_candidatos_ct2_sem_match.csv"
+    hypotheses_path = OUTPUT_DIR / "hipoteses_novas_regras.csv"
+    log_step("Gerando top candidatos para registros sem match")
+    write_dict_rows(top_akd_path, top_akd_rows)
+    write_dict_rows(top_ct2_path, top_ct2_rows)
+    log_step("Gerando hipoteses de novas regras")
+    write_dict_rows(hypotheses_path, build_hypothesis_rows(candidates))
 
     comparison_path = OUTPUT_DIR / "comparativo_conciliacao.csv"
     log_step("Gerando comparativo detalhado")
@@ -4683,10 +4861,16 @@ def export_row_matches(
         "por_confianca": dict(Counter(item.confidence for item in selected)),
         "matches_com_insights": sum(1 for item in selected if "insight_" in item.reasons),
         "candidatos_com_insights": len(insight_candidates),
+        "top_candidatos_akd_sem_match": len(top_akd_rows),
+        "top_candidatos_ct2_sem_match": len(top_ct2_rows),
+        "hipoteses_novas_regras": len(build_hypothesis_rows(candidates)),
         "grupos_match_potenciais": len(grouped_suggestions),
         "arquivo_grupos_potenciais": "saida/relatorio_conciliacao/grupos_match_potenciais.csv",
         "arquivo_comparativo": "saida/relatorio_conciliacao/comparativo_conciliacao.csv",
         "arquivo_matches_por_insights": "saida/relatorio_conciliacao/matches_por_insights.csv",
+        "arquivo_top_candidatos_akd_sem_match": "saida/relatorio_conciliacao/top_candidatos_akd_sem_match.csv",
+        "arquivo_top_candidatos_ct2_sem_match": "saida/relatorio_conciliacao/top_candidatos_ct2_sem_match.csv",
+        "arquivo_hipoteses_novas_regras": "saida/relatorio_conciliacao/hipoteses_novas_regras.csv",
         "arquivo_html": "saida/relatorio_conciliacao/relatorio_conciliacao.html",
     }
 

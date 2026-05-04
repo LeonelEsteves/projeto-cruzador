@@ -12,6 +12,7 @@ Este arquivo deve ser atualizado sempre que a documentação do projeto for revi
 - Documentação das saídas em `saida/descoberta_matches/chaves_candidatas/`.
 - Registro da separação entre artefatos do relatório e artefatos de descoberta de novos matches.
 - Documentação dos reforços de score derivados dos insights de chaves candidatas.
+- Inclusão dos arquivos `top_candidatos_*` e `hipoteses_novas_regras.csv` como saídas do match principal.
 
 ## 30/04/2026
 
