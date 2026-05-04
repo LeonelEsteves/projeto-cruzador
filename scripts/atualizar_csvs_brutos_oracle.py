@@ -82,11 +82,19 @@ def load_query(value: object) -> str:
 def oracle_text(value: object) -> str:
     if value is None:
         return ""
+    if isinstance(value, bytes):
+        return value.hex()
     if isinstance(value, datetime):
         return value.strftime("%Y%m%d")
     if isinstance(value, Decimal):
         return format(value, "f")
-    return str(value).strip()
+    try:
+        return str(value).strip()
+    except TypeError:
+        try:
+            return bytes(value).hex()
+        except TypeError:
+            return repr(value)
 
 
 def backup_existing(path: Path) -> Path | None:

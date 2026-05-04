@@ -1211,7 +1211,7 @@ def summarize_overlap(
     ct2_key: str,
     output_name: str,
 ) -> list[GroupSummary]:
-    log_step(f"Calculando sobreposicao {akd_key} x {ct2_key}")
+    log_step("Analisando compatibilidade entre campos das bases")
     akd_groups = rows_by_key(akd_rows, akd_key)
     ct2_groups = rows_by_key(ct2_rows, ct2_key)
     overlap_keys = sorted(set(akd_groups) & set(ct2_groups))
@@ -1613,7 +1613,7 @@ def score_candidate(akd_row: dict[str, str], ct2_row: dict[str, str]) -> Candida
 def build_candidate_pairs(
     akd_rows: list[dict[str, str]], ct2_rows: list[dict[str, str]]
 ) -> list[CandidateMatch]:
-    log_step("Montando indices auxiliares para candidatos")
+    log_step("Preparando estruturas de busca para encontrar candidatos")
     ct2_by_recno = {normalize_recno(row["R_E_C_N_O_"]): row for row in ct2_rows}
     ct2_by_xdoc = rows_by_key(ct2_rows, "CT2_XDOC")
     ct2_by_at01cr = rows_by_key(ct2_rows, "CT2_AT01CR")
@@ -1780,7 +1780,7 @@ def build_candidate_pairs(
 
 
 def select_best_matches(candidates: list[CandidateMatch]) -> list[CandidateMatch]:
-    log_step("Selecionando melhor candidato por linha")
+    log_step("Selecionando os melhores matches finais")
     ordered = sorted(
         candidates,
         key=lambda item: (
@@ -1836,7 +1836,7 @@ def export_row_matches(
     glossary_rows: list[dict[str, str]] | None = None,
     glossary_source: Path | str | None = None,
 ) -> dict[str, object]:
-    log_step("Gerando reconciliacao linha a linha")
+    log_step("Cruzando registros e avaliando candidatos")
     akd_map = {normalize_recno(row["R_E_C_N_O_"]): row for row in akd_rows}
     ct2_map = {normalize_recno(row["R_E_C_N_O_"]): row for row in ct2_rows}
     candidates = build_candidate_pairs(akd_rows, ct2_rows)
@@ -1847,7 +1847,7 @@ def export_row_matches(
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     match_path = OUTPUT_DIR / "matches_linha_a_linha.csv"
-    log_step(f"Exportando {match_path.name}")
+    log_step("Gerando arquivo de matches finais")
     with match_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle, delimiter=";")
         writer.writerow(
@@ -1923,7 +1923,7 @@ def export_row_matches(
     selected_pairs = {(item.akd_recno, item.ct2_recno) for item in selected}
     insight_candidates = [item for item in candidates if "insight_" in item.reasons]
     insight_path = OUTPUT_DIR / "matches_por_insights.csv"
-    log_step(f"Exportando {insight_path.name}")
+    log_step("Gerando trilha de matches por insights")
     with insight_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle, delimiter=";")
         writer.writerow(
@@ -1987,7 +1987,7 @@ def export_row_matches(
             )
 
     comparison_path = OUTPUT_DIR / "comparativo_conciliacao.csv"
-    log_step(f"Exportando {comparison_path.name}")
+    log_step("Gerando comparativo detalhado")
     with comparison_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle, delimiter=";")
         writer.writerow(
@@ -2051,7 +2051,7 @@ def export_row_matches(
                 )
 
     pending_ct2_path = OUTPUT_DIR / "ct2_sem_match.csv"
-    log_step(f"Exportando {pending_ct2_path.name}")
+    log_step("Gerando pendencias da base CT2")
     with pending_ct2_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle, delimiter=";")
         writer.writerow(
@@ -2090,7 +2090,7 @@ def export_row_matches(
             )
 
     pending_akd_path = OUTPUT_DIR / "akd_sem_match.csv"
-    log_step(f"Exportando {pending_akd_path.name}")
+    log_step("Gerando pendencias da base AKD")
     with pending_akd_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle, delimiter=";")
         writer.writerow(
@@ -2123,7 +2123,7 @@ def export_row_matches(
             )
 
     grouped_path = OUTPUT_DIR / "grupos_match_potenciais.csv"
-    log_step(f"Exportando {grouped_path.name}")
+    log_step("Gerando grupos potenciais de conciliacao")
     with grouped_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle, delimiter=";")
         writer.writerow(
@@ -2157,7 +2157,7 @@ def export_row_matches(
             )
 
     report_path = OUTPUT_DIR / "relatorio_conciliacao.html"
-    log_step(f"Exportando {report_path.name}")
+    log_step("Gerando relatorio HTML")
 
     report_rows: list[dict[str, object]] = []
     for item in selected:
@@ -4775,7 +4775,7 @@ def build_summary(
 
 def main() -> None:
     args = parse_args()
-    log_step("Inicio da analise AKD x CT2")
+    log_step("Iniciando conciliacao AKD x CT2")
     glossary_rows: list[dict[str, str]] | None = None
     glossary_source: Path | str | None = None
     if args.fonte == "oracle":
@@ -4793,7 +4793,7 @@ def main() -> None:
         ct2_path = resolve_source_path(RAW_DIR, "DADOS-CT2010")
         akd_rows_raw = read_rows(akd_path)
         ct2_rows_raw = read_rows(ct2_path)
-    log_step("Aplicando filtros de origem nas bases")
+    log_step("Preparando dados de entrada")
     akd_rows = filter_akd_rows(akd_rows_raw)
     ct2_rows = filter_ct2_rows(ct2_rows_raw)
     summary = build_summary(
@@ -4809,13 +4809,13 @@ def main() -> None:
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     summary_path = OUTPUT_DIR / "resumo_analise.json"
-    log_step(f"Exportando {summary_path.name}")
+    log_step("Gerando resumo da execucao")
     summary_path.write_text(
         json.dumps(summary, ensure_ascii=False, indent=2, default=str),
         encoding="utf-8",
     )
 
-    log_step("Analise finalizada")
+    log_step("Conciliacao finalizada")
     print(json.dumps(summary, ensure_ascii=False, indent=2, default=str))
 
 
