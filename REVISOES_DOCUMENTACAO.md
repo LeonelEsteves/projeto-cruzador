@@ -2,6 +2,17 @@
 
 Este arquivo deve ser atualizado sempre que a documentação do projeto for revisada.
 
+## 04/05/2026
+
+**Responsável:** Leonel Esteves
+
+### Alterações Realizadas
+
+- Inclusão da seção de descoberta de chaves candidatas entre AKD e CT2 no `README.md`.
+- Documentação das saídas em `saida/descoberta_matches/chaves_candidatas/`.
+- Registro da separação entre artefatos do relatório e artefatos de descoberta de novos matches.
+- Documentação dos reforços de score derivados dos insights de chaves candidatas.
+
 ## 30/04/2026
 
 **Responsável:** Leonel Diniz

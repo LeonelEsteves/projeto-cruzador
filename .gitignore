@@ -58,6 +58,7 @@ backup/
 *.old
 *.orig
 *.log
+logs/
 debug.log
 dados/brutos/backups/
 

@@ -32,8 +32,8 @@ O objetivo é reduzir o esforço manual de análise entre AKD e CT2, oferecendo 
 
 ## Principais Entregas
 
-- Relatório HTML em `saida/relatorio_conciliacao.html`.
-- Resumo executivo e técnico em `saida/resumo_analise.json`.
+- Relatório HTML em `saida/relatorio_conciliacao/relatorio_conciliacao.html`.
+- Resumo executivo e técnico em `saida/relatorio_conciliacao/resumo_analise.json`.
 - Bases auxiliares em CSV para auditoria dos matches e pendências.
 - Atualização automática dos CSVs brutos a partir do Oracle, sempre em modo somente leitura.
 - Proteções para evitar versionamento de credenciais, backups, artefatos ADVPL e arquivos gerados.
@@ -85,18 +85,20 @@ Os CSVs brutos podem ser atualizados por consulta Oracle usando as queries local
 
 ## Saídas
 
-Os arquivos gerados ficam em `saida/`.
+Os arquivos gerados ficam em `saida/`, separados por finalidade.
 
 Principais saídas:
 
-- `relatorio_conciliacao.html`: relatório principal para navegação e análise.
-- `resumo_analise.json`: resumo da execução e indicadores principais.
-- `matches_linha_a_linha.csv`: matches selecionados.
-- `comparativo_conciliacao.csv`: comparativo detalhado AKD x CT2.
-- `akd_sem_match.csv`: registros AKD sem match final.
-- `ct2_sem_match.csv`: registros CT2 sem match final.
-- `grupos_match_potenciais.csv`: indícios de grupos `1xN` e `Nx1`.
-- `overlap_xdoc.csv`, `overlap_xdoc_at01cr.csv`, `overlap_xnumap.csv`: sobreposições documentais.
+- `saida/relatorio_conciliacao/relatorio_conciliacao.html`: relatório principal para navegação e análise.
+- `saida/relatorio_conciliacao/resumo_analise.json`: resumo da execução e indicadores principais.
+- `saida/relatorio_conciliacao/matches_linha_a_linha.csv`: matches selecionados.
+- `saida/relatorio_conciliacao/matches_por_insights.csv`: trilha dos pares gerados pelos reforços derivados da descoberta de chaves candidatas.
+- `saida/relatorio_conciliacao/comparativo_conciliacao.csv`: comparativo detalhado AKD x CT2.
+- `saida/relatorio_conciliacao/akd_sem_match.csv`: registros AKD sem match final.
+- `saida/relatorio_conciliacao/ct2_sem_match.csv`: registros CT2 sem match final.
+- `saida/relatorio_conciliacao/grupos_match_potenciais.csv`: indícios de grupos `1xN` e `Nx1`.
+- `saida/relatorio_conciliacao/overlap_xdoc.csv`, `saida/relatorio_conciliacao/overlap_xdoc_at01cr.csv`, `saida/relatorio_conciliacao/overlap_xnumap.csv`: sobreposições documentais.
+- `saida/descoberta_matches/`: arquivos auxiliares dos scripts de descoberta de novas regras de match.
 
 A pasta `saida/` é gerada localmente e não deve ser versionada.
 
@@ -124,10 +126,18 @@ Principais âncoras:
 - `AKD_XDOC = CT2_XDOC`
 - `AKD_XDOC = CT2_AT01CR`
 - `AKD_XNUMAP = CT2_XDOCUM`
+- `AKD_XNUMAP = CT2_AT04DB`
 - `AKD_XDOC` no formato `CT2<recno>` apontando para `CT2.R_E_C_N_O_`
 - tokens estruturados entre `AKD_CHAVE` e `CT2_KEY`
 - histórico igual com data e valor para processos específicos
 - token `RI:` com data e valor para o processo `900027`
+
+Os insights de chaves candidatas reforçam o score quando uma âncora documental aparece combinada com contexto contábil. As combinações priorizadas atualmente são:
+
+- `AKD_XNUMAP + AKD_ENT05` contra `CT2_XDOCUM/CT2_AT04DB + CT2_DEBITO`;
+- `AKD_XNUMAP + AKD_CLVLR` contra `CT2_XDOCUM/CT2_AT04DB + CT2_CLVLDB`;
+- `AKD_XNUMAP + AKD_CC` contra `CT2_XDOCUM/CT2_AT04DB + CT2_CCD`;
+- `AKD_CLVLR + competência + valor` contra `CT2_CLVLDB + competência + valor`.
 - competência e valor
 - documentos extraídos do histórico e de campos auxiliares
 
@@ -148,7 +158,7 @@ O pareamento final é feito de forma controlada para evitar escolhas duplicadas 
 
 ## Relatório HTML
 
-O relatório principal é `saida/relatorio_conciliacao.html`.
+O relatório principal é `saida/relatorio_conciliacao/relatorio_conciliacao.html`.
 
 Ele inclui:
 
@@ -183,8 +193,39 @@ python scripts/gerar_relatorio_conciliacao_akd_ct2.py
 ### 3. Abrir o Relatório
 
 ```powershell
-start .\saida\relatorio_conciliacao.html
+start .\saida\relatorio_conciliacao\relatorio_conciliacao.html
 ```
+
+### 4. Gerar Arquivos de Descoberta de Novos Matches
+
+```powershell
+python scripts/investigar_matches_sem_conciliacao_akd_ct2.py
+```
+
+Os arquivos dessa investigação ficam em `saida/descoberta_matches/`, separados dos arquivos do relatório.
+
+### 5. Descobrir Chaves Candidatas entre AKD e CT2
+
+```powershell
+python scripts/descobrir_chaves_candidatas_akd_ct2.py
+```
+
+Esse script faz uma varredura de ciência de dados sobre as duas bases para encontrar colunas e combinações de colunas candidatas ao relacionamento. Ele executa:
+
+- perfil de preenchimento, cardinalidade e duplicidade das colunas;
+- cruzamento exato entre todas as colunas AKD x CT2;
+- geração de chaves compostas a partir dos melhores sinais;
+- análise de tokens documentais extraídos de histórico, chave e campos de documento;
+- resumo final com ranking e recomendações.
+
+As saídas ficam em `saida/descoberta_matches/chaves_candidatas/`:
+
+- `perfil_colunas.csv`;
+- `candidatos_coluna_simples.csv`;
+- `candidatos_chaves_compostas.csv`;
+- `candidatos_tokens_documentais.csv`;
+- `resumo_chaves_candidatas.json`;
+- `INSIGHTS_CHAVES_CANDIDATAS.md`.
 
 ## Atualização dos Dados Brutos pelo Oracle
 

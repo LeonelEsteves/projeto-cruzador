@@ -21,7 +21,8 @@ from validar_sql_somente_leitura import normalize_readonly_query
 
 NS = {"main": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
 ROOT = Path(__file__).resolve().parents[1]
-OUTPUT_DIR = ROOT / "saida"
+OUTPUT_ROOT = ROOT / "saida"
+OUTPUT_DIR = OUTPUT_ROOT / "relatorio_conciliacao"
 RAW_DIR = ROOT / "dados" / "brutos"
 REFERENCE_DIR = ROOT / "dados" / "referencia"
 DEFAULT_ORACLE_CONFIG = ROOT / "config" / "oracle.json"
@@ -1240,7 +1241,7 @@ def summarize_overlap(
             )
         )
 
-    OUTPUT_DIR.mkdir(exist_ok=True)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     output_path = OUTPUT_DIR / output_name
     with output_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle, delimiter=";")
@@ -1424,6 +1425,28 @@ def score_candidate(akd_row: dict[str, str], ct2_row: dict[str, str]) -> Candida
     if {"ent05_conta", "cc", "classe_valor"} <= set(reasons):
         score += 12
         reasons.append("conta_cc_classe")
+
+    has_xnumap_anchor = "xnumap_xdocum" in reasons or "xnumap_at04db" in reasons
+
+    if has_xnumap_anchor and "ent05_conta" in reasons:
+        score += 24
+        reasons.append("insight_xnumap_conta")
+
+    if has_xnumap_anchor and "classe_valor" in reasons:
+        score += 22
+        reasons.append("insight_xnumap_classe")
+
+    if has_xnumap_anchor and "cc" in reasons:
+        score += 14
+        reasons.append("insight_xnumap_cc")
+
+    if has_xnumap_anchor:
+        score += 10
+        reasons.append("insight_xnumap_valor")
+
+    if "classe_valor" in reasons and "competencia" in reasons:
+        score += 12
+        reasons.append("insight_classe_valor_competencia")
 
     has_direct_doc_anchor = any(
         reason in reasons
@@ -1769,14 +1792,19 @@ def select_best_matches(candidates: list[CandidateMatch]) -> list[CandidateMatch
             "doc_hist_data_conta" in item.reasons,
             "doc_hist_competencia" in item.reasons,
             "doc_hist_conta_valor" in item.reasons,
+            "insight_xnumap_conta" in item.reasons,
+            "insight_xnumap_classe" in item.reasons,
+            "insight_xnumap_cc" in item.reasons,
             "xdoc_at01cr" in item.reasons,
             "xnumap_xdocum" in item.reasons,
             "xnumap_at04db" in item.reasons,
+            "insight_xnumap_valor" in item.reasons,
             "doc_extra_competencia" in item.reasons,
             "doc_extra_classe" in item.reasons,
             "chave_competencia" in item.reasons,
             "competencia_conta_cc" in item.reasons,
             "competencia_conta_classe" in item.reasons,
+            "insight_classe_valor_competencia" in item.reasons,
             "classe_valor" in item.reasons,
             item.token_overlap,
             item.text_similarity,
@@ -1817,7 +1845,7 @@ def export_row_matches(
     selected_ct2 = {item.ct2_recno for item in selected}
     grouped_suggestions = build_group_match_suggestions(candidates, selected)
 
-    OUTPUT_DIR.mkdir(exist_ok=True)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     match_path = OUTPUT_DIR / "matches_linha_a_linha.csv"
     log_step(f"Exportando {match_path.name}")
     with match_path.open("w", newline="", encoding="utf-8") as handle:
@@ -1889,6 +1917,72 @@ def export_row_matches(
                     clean(ct2_row.get("CT2_CCC", "")),
                     row_text_akd(akd_row),
                     row_text_ct2(ct2_row),
+                ]
+            )
+
+    selected_pairs = {(item.akd_recno, item.ct2_recno) for item in selected}
+    insight_candidates = [item for item in candidates if "insight_" in item.reasons]
+    insight_path = OUTPUT_DIR / "matches_por_insights.csv"
+    log_step(f"Exportando {insight_path.name}")
+    with insight_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle, delimiter=";")
+        writer.writerow(
+            [
+                "status",
+                "akd_recno",
+                "ct2_recno",
+                "confidence",
+                "score",
+                "reasons",
+                "akd_xnumap",
+                "ct2_xdocum",
+                "ct2_at04db",
+                "akd_ent05",
+                "ct2_debito",
+                "akd_clvlr",
+                "ct2_clvldb",
+                "akd_cc",
+                "ct2_ccd",
+                "akd_data",
+                "ct2_data",
+                "akd_valor",
+                "ct2_valor",
+            ]
+        )
+        for item in sorted(insight_candidates, key=lambda value: value.score, reverse=True):
+            akd_row = akd_map[item.akd_recno]
+            ct2_row = ct2_map[item.ct2_recno]
+            if (item.akd_recno, item.ct2_recno) in selected_pairs:
+                status = "selecionado_final"
+            elif item.akd_recno in selected_akd and item.ct2_recno in selected_ct2:
+                status = "nao_selecionado_akd_e_ct2_ja_usados"
+            elif item.akd_recno in selected_akd:
+                status = "nao_selecionado_akd_ja_usado"
+            elif item.ct2_recno in selected_ct2:
+                status = "nao_selecionado_ct2_ja_usado"
+            else:
+                status = "nao_selecionado_disponivel"
+            writer.writerow(
+                [
+                    status,
+                    item.akd_recno,
+                    item.ct2_recno,
+                    item.confidence,
+                    item.score,
+                    item.reasons,
+                    clean(akd_row.get("AKD_XNUMAP", "")),
+                    clean(ct2_row.get("CT2_XDOCUM", "")),
+                    clean(ct2_row.get("CT2_AT04DB", "")),
+                    clean(akd_row.get("AKD_ENT05", "")),
+                    clean(ct2_row.get("CT2_DEBITO", "")),
+                    clean(akd_row.get("AKD_CLVLR", "")),
+                    clean(ct2_row.get("CT2_CLVLDB", "")),
+                    clean(akd_row.get("AKD_CC", "")),
+                    clean(ct2_row.get("CT2_CCD", "")),
+                    clean(akd_row.get("AKD_DATA", "")),
+                    derived_ct2_date(ct2_row),
+                    f"{normalize_decimal(akd_row.get('AKD_VALOR1', '')) or Decimal('0.00'):.2f}",
+                    f"{normalize_decimal(ct2_row.get('CT2_VALOR', '')) or Decimal('0.00'):.2f}",
                 ]
             )
 
@@ -4587,10 +4681,13 @@ def export_row_matches(
         "candidatos_gerados": len(candidates),
         "matches_selecionados": len(selected),
         "por_confianca": dict(Counter(item.confidence for item in selected)),
+        "matches_com_insights": sum(1 for item in selected if "insight_" in item.reasons),
+        "candidatos_com_insights": len(insight_candidates),
         "grupos_match_potenciais": len(grouped_suggestions),
-        "arquivo_grupos_potenciais": "saida/grupos_match_potenciais.csv",
-        "arquivo_comparativo": "saida/comparativo_conciliacao.csv",
-        "arquivo_html": "saida/relatorio_conciliacao.html",
+        "arquivo_grupos_potenciais": "saida/relatorio_conciliacao/grupos_match_potenciais.csv",
+        "arquivo_comparativo": "saida/relatorio_conciliacao/comparativo_conciliacao.csv",
+        "arquivo_matches_por_insights": "saida/relatorio_conciliacao/matches_por_insights.csv",
+        "arquivo_html": "saida/relatorio_conciliacao/relatorio_conciliacao.html",
     }
 
 
@@ -4710,7 +4807,7 @@ def main() -> None:
         glossary_source=glossary_source,
     )
 
-    OUTPUT_DIR.mkdir(exist_ok=True)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     summary_path = OUTPUT_DIR / "resumo_analise.json"
     log_step(f"Exportando {summary_path.name}")
     summary_path.write_text(
