@@ -4,22 +4,22 @@
     "ct2": "DADOS-CT2010.csv"
   },
   "linhas": {
-    "akd": 20341,
-    "ct2": 27945
+    "akd": 20863,
+    "ct2": 27922
   },
   "sobreposicao_documental": {
     "akd_xdoc__ct2_xdoc": {
       "keys_em_comum": 1682,
       "status": {
-        "ambiguo": 1490,
-        "forte_grupo": 192
+        "ambiguo": 1492,
+        "forte_grupo": 190
       }
     },
     "akd_xdoc__ct2_at01cr": {
       "keys_em_comum": 1682,
       "status": {
-        "ambiguo": 1490,
-        "forte_grupo": 192
+        "ambiguo": 1492,
+        "forte_grupo": 190
       }
     },
     "akd_xnumap__ct2_xdocum": {
@@ -31,24 +31,24 @@
     }
   },
   "assinatura_residual": {
-    "akd_distinct_month_value": 9677,
-    "ct2_distinct_month_value": 14512,
+    "akd_distinct_month_value": 10044,
+    "ct2_distinct_month_value": 14496,
     "overlap_month_value": 5720
   },
   "reconciliacao_linha_a_linha": {
-    "candidatos_gerados": 261412,
-    "matches_selecionados": 9856,
+    "candidatos_gerados": 261323,
+    "matches_selecionados": 9860,
     "por_confianca": {
-      "muito_forte": 9385,
-      "forte": 285,
-      "provavel": 186
+      "muito_forte": 9379,
+      "forte": 291,
+      "provavel": 190
     },
-    "matches_com_insights": 6579,
-    "candidatos_com_insights": 162845,
-    "top_candidatos_akd_sem_match": 4951,
-    "top_candidatos_ct2_sem_match": 7050,
+    "matches_com_insights": 6570,
+    "candidatos_com_insights": 162814,
+    "top_candidatos_akd_sem_match": 4977,
+    "top_candidatos_ct2_sem_match": 7004,
     "hipoteses_novas_regras": 4,
-    "grupos_match_potenciais": 13655,
+    "grupos_match_potenciais": 13625,
     "arquivo_grupos_potenciais": "saida/relatorio_conciliacao/grupos_match_potenciais.csv",
     "arquivo_comparativo": "saida/relatorio_conciliacao/comparativo_conciliacao.csv",
     "arquivo_matches_por_insights": "saida/relatorio_conciliacao/matches_por_insights.csv",
